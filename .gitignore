@@ -1,0 +1,20 @@
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp/
+.ruff_cache/
+
+# 本地配置与密钥
+.env
+
+# 构建产物
+dist/
+build/
+*.egg-info/
+
+# 运行期数据（后续 M4 使用）
+memory/traces/
+memory/transcripts/
+.chat_history

@@ -1,0 +1,34 @@
+# JobAgent 工程配置：uv 管理依赖，pytest 测试，ruff 检查
+[project]
+name = "jobagent"
+version = "0.1.0"
+description = "本地优先的编程 Agent 运行时（最小闭环版）"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.28,<1.0",
+    "pydantic>=2.0,<3.0",
+    "python-dotenv>=1.0",
+    "rich>=13.0,<14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# no:cacheprovider 禁用 .pytest_cache 写入；basetemp 把临时目录放到项目内
+# （避免在系统 %TEMP% 无权限时 tmp_path 报错）
+addopts = "-p no:cacheprovider --basetemp=.pytest_tmp"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+# 排除生成目录，避免把测试临时文件、缓存当作源码检查
+exclude = [".pytest_tmp", ".pytest_cache", ".ruff_cache", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
