@@ -27,11 +27,13 @@ uv sync --extra dev
 - M2 能调工具：工具注册中心 + Glob / Read
 - M3 闭环跑通：ReAct 主循环 + Grep / Edit + 交互 CLI
 - M4 变得可靠：读后写三件套 + JSONL trace / transcript + Bash 兜底 + 单轮入口
+- M5 提升一轮能力（已完成）：内容哈希指纹（解决 ABA）+ 超限强制总结（partial 标记）+ 工具提示词工作流 + 默认 20 轮
 
 ## 目录
 
 - `core/`：基础层，配置 / 消息 / 模型封装
-- `runtime/`：ReAct 主循环与运行状态
+- `runtime/`：ReAct 主循环与运行状态、上下文工程（runtime/context/）
+- `prompts/`：系统提示词（行为规则 + 工具工作流程）
 - `tools/`：Glob / Grep / Read / Edit / Bash
 - `memory/`：JSONL trace 与会话记录
 - `app/`：交互 CLI 与单轮入口
