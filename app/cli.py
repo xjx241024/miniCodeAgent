@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 
-from core.config import load_llm_config
+from core.config import load_context_config, load_llm_config
 from core.llm import LLMClient
 from memory.trace import default_trace_path, new_session_id
 from memory.transcript import default_transcript_path
+from runtime.context import ContextBuilder
 from runtime.loop import AgentLoop
 from tools.builtin.bash_tool import BashTool
 from tools.builtin.edit_tool import EditTool
@@ -66,6 +68,8 @@ def main() -> None:
         return
 
     registry = build_registry()
+    # 上下文构建器：负责 L1 系统规则 / L2 项目规则 / L3 会话动态的拼装与水位 compact
+    context_builder = ContextBuilder(Path.cwd(), load_context_config())
     console.print(Panel("输入任务开始执行；/exit 退出；Ctrl-C 中断", title="JobAgent CLI"))
 
     with LLMClient(config) as client:
@@ -93,6 +97,7 @@ def main() -> None:
                 session_id=session_id,
                 trace_path=default_trace_path(session_id),
                 transcript_path=default_transcript_path(session_id),
+                context_builder=context_builder,
             )
             result = loop.run(task)
             console.print(_result_panel(result))

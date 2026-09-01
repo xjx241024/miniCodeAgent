@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 from app.cli import DEFAULT_MAX_STEPS, build_registry
-from core.config import load_llm_config
+from core.config import load_context_config, load_llm_config
 from core.llm import LLMClient
 from memory.trace import default_trace_path, new_session_id
 from memory.transcript import default_transcript_path, load_messages
+from runtime.context import ContextBuilder
 from runtime.loop import AgentLoop
 from runtime.state import AgentRunResult
 from tools.registry import ToolRegistry
@@ -36,6 +38,7 @@ def execute_once(
     transcript_path=None,
     resume: str | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    context_builder: ContextBuilder | None = None,
 ) -> AgentRunResult:
     """执行一次单轮任务；llm 可注入假模型以便离线测试。"""
     history = load_messages(resume) if resume else None
@@ -47,6 +50,7 @@ def execute_once(
         trace_path=trace_path,
         transcript_path=transcript_path,
         on_tool_event=on_tool_event,
+        context_builder=context_builder,
     )
     return loop.run(task, history=history)
 
@@ -73,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     transcript_path = args.transcript or (args.resume or default_transcript_path(session_id))
 
     registry = build_registry()
+    context_builder = ContextBuilder(Path.cwd(), load_context_config())
     with LLMClient(config) as client:
         result = execute_once(
             client,
@@ -83,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             transcript_path=transcript_path,
             resume=args.resume,
             max_steps=args.max_steps,
+            context_builder=context_builder,
         )
 
     if result.success:

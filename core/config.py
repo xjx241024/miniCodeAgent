@@ -46,3 +46,31 @@ def load_llm_config(env_file: str | Path = ".env") -> LLMConfig:
         max_retries=int(os.getenv("LLM_MAX_RETRIES", "2")),
         retry_backoff_seconds=float(os.getenv("LLM_RETRY_BACKOFF", "1.0")),
     )
+
+
+class ContextConfig(BaseModel):
+    """上下文工程参数（L1/L2/L3 拼装与水位 compact）。"""
+
+    max_tokens: int = Field(default=32000, description="上下文预算上限（估算 token）")
+    compact_ratio: float = Field(default=0.8, description="水位阈值比例：估算达预算该比例即压缩")
+    keep_turns: int = Field(default=20, description="compact 后保留的最近对话单元数")
+    project_files: bool = Field(default=True, description="是否读取 AGENTS.md 等项目规则")
+    repo_map: bool = Field(default=True, description="是否注入文件地图")
+    repo_map_max_lines: int = Field(default=150, description="文件地图最大行数")
+
+
+def load_context_config(env_file: str | Path = ".env") -> ContextConfig:
+    """从 .env 读取上下文工程参数（与 load_llm_config 共用同一环境文件）。"""
+    env_path = Path(env_file)
+    if env_path.is_file():
+        load_dotenv(env_path)
+    else:
+        load_dotenv()
+    return ContextConfig(
+        max_tokens=int(os.getenv("CONTEXT_MAX_TOKENS", "32000")),
+        compact_ratio=float(os.getenv("CONTEXT_COMPACT_RATIO", "0.8")),
+        keep_turns=int(os.getenv("CONTEXT_KEEP_TURNS", "20")),
+        project_files=os.getenv("CONTEXT_PROJECT_FILES", "1") in ("1", "true", "True"),
+        repo_map=os.getenv("CONTEXT_REPO_MAP", "1") in ("1", "true", "True"),
+        repo_map_max_lines=int(os.getenv("CONTEXT_REPO_MAP_MAX_LINES", "150")),
+    )

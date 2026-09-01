@@ -1,6 +1,6 @@
 # JobAgent 项目骨架说明（最小闭环）
 
-> 状态：规划文档，代码已从 M1 搭建到 M5 前期（可靠性：哈希指纹 / 强制总结 / 工具提示词）。
+> 状态：规划文档，代码已从 M1 搭建到 M6（上下文工程）。
 > 参考：`../KamaClaude`（架构与学习地图）、`../MyCodeAgent`（工程纪律）、`../YYHDBL-HelloCodeAgentCli`（最小起点）、`../Extra09-Agent应用开发实践踩坑与经验分享.md`（设计原则来源）。
 
 ## 一、项目定位与目标
@@ -33,7 +33,7 @@
 - 不做 daemon / TUI / Web
 - 不做 MCP、Skills、子代理、多智能体
 - 不做 RAG / 向量记忆
-- 不做上下文 compact（只预留接口）
+- 不做 LLM 摘要式 compact（M6 已实现截断式，摘要式留接口）
 
 ## 三、核心设计原则
 
@@ -113,7 +113,8 @@ JobAgent/
 - M2 能调工具（已完成）：tools/registry.py + Glob / Read 两个工具，模型能根据任务选择工具。
 - M3 闭环跑通（已完成）：runtime/loop.py + Grep/Edit 工具 + app/cli.py，注册中心内置读后写保护（read 缓存 + 乐观锁）。
 - M4 变得可靠（已完成）：Edit 读后写 + 乐观锁 + 原子写入；memory/ 的 JSONL trace / transcript；app/one_shot.py 的 -p 单轮模式；Bash 低频兜底工具。
-- M5 提升一轮能力（进行中）：内容哈希指纹解决 ABA；工具 schema / 系统提示词工作流；grep 支持单文件；超限强制总结 + partial 标记；默认 max_steps=20。
+- M5 提升一轮能力（已完成）：内容哈希指纹解决 ABA；工具 schema / 系统提示词工作流；grep 支持单文件；超限强制总结 + partial 标记；默认 max_steps=20。
+- M6 上下文工程（已完成）：runtime/context/ 实现 L1 系统规则 / L2 项目规则（AGENTS.md + 文件地图）/ L3 会话动态拼装；token 估算水位检测 + 截断式 compact；LLM 摘要式 compact 预留。
 
 ## 七、验收清单（M4 结束时）
 
@@ -128,7 +129,7 @@ JobAgent/
 
 - 真实模型联调：配置 .env 后，用 `demo/m3_task.py` 或 `app.one_shot -p "任务"` 跑真实链路。
 - 规划（已确认优先级）：
-  - 核心：上下文工程（L1 系统规则 / L2 项目规则 / L3 会话动态拼接、compact、水位检测）——用户认为这是 Agent 核心，优先做。
-  - 中等：重复调用检测、间隔复盘回合、read 分段读取、注册中心参数清洗。
+  - 核心（M6 已完成）：上下文工程（runtime/context/：L1/L2/L3 拼装 + 水位 compact）。
+  - 中等：LLM 摘要式 compact、重复调用检测、间隔复盘回合、read 分段读取、注册中心参数清洗。
   - 后期：Skills / MCP / 子代理（优先级低，之后再实现）。
   - 求职场景：简历 / 岗位搜索 demo。

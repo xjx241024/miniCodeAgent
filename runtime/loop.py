@@ -15,6 +15,7 @@ from typing import Any
 from core.message import Message, system
 from memory.trace import TraceWriter, new_session_id
 from memory.transcript import TranscriptWriter
+from runtime.context.builder import ContextBuilder, load_system_prompt
 from runtime.state import AgentRunResult, StepRecord
 from tools.base import ToolResult
 from tools.registry import ToolRegistry
@@ -26,13 +27,6 @@ ToolEventCallback = Callable[[str, str, Any], None]
 
 # trace 里单段文本的最大长度，避免超大工具输出撑爆 trace 文件
 TRACE_TEXT_LIMIT = 2000
-
-DEFAULT_SYSTEM_PROMPT = """你是一个运行在本地代码仓库中的编程助手。
-工作流程：
-1. 先收集证据（glob / grep / read）再下结论，不要凭空猜测文件名。
-2. 互不依赖的工具调用可同时发起，尽量在一个回合批量完成。
-3. 修改文件前必须先 read；遇到 error 根据错误码换策略，不要重复同样失败的调用。
-4. 完成后用中文总结；若无法完成也要如实说明卡在哪里。"""
 
 
 class AgentLoop:
@@ -55,11 +49,13 @@ class AgentLoop:
         session_id: str | None = None,
         trace_path: str | Path | None = None,
         transcript_path: str | Path | None = None,
+        context_builder: ContextBuilder | None = None,
     ):
         self.llm = llm
         self.registry = registry
         self.max_steps = max_steps
-        self.system_prompt = system_prompt or _load_system_prompt()
+        self.system_prompt = system_prompt or load_system_prompt()
+        self.context_builder = context_builder
         self.on_tool_event = on_tool_event
         self.session_id = session_id
         self.trace_path = str(trace_path) if trace_path else None
@@ -97,13 +93,27 @@ class AgentLoop:
         return result
 
     def _build_messages(self, task: str, history: list[Message] | None) -> list[Message]:
-        """组装本轮消息：全新会话或基于历史继续。"""
+        """组装本轮消息：优先用上下文构建器，否则退回简单拼装。"""
+        if self.context_builder is not None:
+            return self.context_builder.build(task, history)
         if history:
             return list(history) + [Message(role="user", content=task)]
         return [system(self.system_prompt), Message(role="user", content=task)]
 
     def _loop(self, messages, trace, session) -> AgentRunResult:
         for step in range(1, self.max_steps + 1):
+            # 每轮发请求前做水位检测，超阈值先压缩历史再继续
+            if self.context_builder is not None and self.context_builder.needs_compact(messages):
+                before = len(messages)
+                messages = self.context_builder.compact(messages)
+                if len(messages) != before:
+                    record = StepRecord(
+                        step=step,
+                        kind="context",
+                        detail="上下文超水位，已折叠更早对话",
+                    )
+                    trace.append(record)
+                    session.log_step(record)
             response = self.llm.chat(messages, tools=self.registry.schemas())
 
             if not response.tool_calls:
@@ -244,13 +254,6 @@ def _tool_payload(arguments: dict, result: ToolResult) -> dict:
     return {"arguments": arguments, "result": data}
 
 
-def _load_system_prompt() -> str:
-    """从 prompts/system.md 读取系统提示词，缺失时用默认值。"""
-    path = Path(__file__).resolve().parents[1] / "prompts" / "system.md"
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return DEFAULT_SYSTEM_PROMPT
 
 
 def _parse_arguments(raw: str) -> dict:
