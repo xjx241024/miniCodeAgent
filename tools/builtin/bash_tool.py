@@ -1,14 +1,18 @@
-"""Bash 兜底工具：执行低频 shell 命令，带黑白名单约束与超时。
+"""Bash 兜底工具：执行低频 shell 命令，带黑白名单 + 审批 + 工作空间约束。
 
-定位是"最后手段"：命中禁止模式的命令直接拒绝，强制模型走原子工具主链路。
+定位是"最后手段"：命中禁止模式的命令直接拒绝；中高危命令交给审批网关，
+交互式 CLI 会询问用户；执行时把 cwd 固定在工作空间根内。
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 
 from tools.base import BaseTool, ToolResult
+from tools.permissions import PermissionAction, PermissionGateway
+from tools.workspace import Workspace
 
 # 禁止模式（参考 Extra09 设计）：禁止用 bash 做高频工具能做的事、禁止交互/网络/危险命令
 BASH_DISABLED_PATTERNS = [
@@ -28,10 +32,10 @@ OUTPUT_LIMIT = 4000
 
 
 class BashTool(BaseTool):
-    """执行一条低频 shell 命令；命中禁止模式时拒绝，超时或非零退出按错误返回。"""
+    """执行一条低频 shell 命令；命中禁止模式拒绝，中高危走审批，超时/非零退出按错误返回。"""
 
     name = "bash"
-    description = "执行低频 shell 命令（禁止高频动作、交互、网络与危险命令）"
+    description = "执行低频 shell 命令（禁止高频动作、交互、网络与危险命令；中高危需用户确认）"
     parameters = {
         "type": "object",
         "properties": {
@@ -41,6 +45,15 @@ class BashTool(BaseTool):
         "required": ["command"],
     }
 
+    def __init__(
+        self,
+        workspace: Workspace | None = None,
+        permission: PermissionGateway | None = None,
+    ):
+        # 默认工作空间为当前目录；permission 为 None 时只做黑名单拦截（测试/降级路径）
+        self.workspace = workspace or Workspace(Path.cwd())
+        self.permission = permission
+
     def _run(self, arguments: dict) -> ToolResult:
         command = str(arguments.get("command", "")).strip()
         timeout = int(arguments.get("timeout", 10))
@@ -49,14 +62,31 @@ class BashTool(BaseTool):
         blocked = self._check_blocked(command)
         if blocked:
             return ToolResult.failure(code="BLOCKED_COMMAND", message=blocked)
+        # 审批：策略化决策（DENY 直接拒，ASK 询问用户）
+        if self.permission is not None:
+            decision = self.permission.decide(command)
+            if decision.action == PermissionAction.DENY:
+                return ToolResult.failure(
+                    code="BLOCKED_COMMAND",
+                    message=f"命令被风险策略拒绝: {command}（{decision.reason}）",
+                )
+            if (
+                decision.action == PermissionAction.ASK
+                and not self.permission.ask(command, decision)
+            ):
+                return ToolResult.failure(
+                    code="BLOCKED_COMMAND",
+                    message=f"用户拒绝了命令: {command}（{decision.reason}）",
+                )
         try:
-            # shell=True 在 POSIX 用 sh/bash，在 Windows 用 cmd；测试中会被 mock
+            # 固定 cwd 在工作空间根内；shell=True 在 POSIX 用 sh/bash，在 Windows 用 cmd
             proc = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=str(self.workspace.root),
             )
         except subprocess.TimeoutExpired:
             return ToolResult.failure(code="TIMEOUT", message=f"命令执行超过 {timeout} 秒")

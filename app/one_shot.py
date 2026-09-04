@@ -17,7 +17,9 @@ from memory.transcript import default_transcript_path, load_messages
 from runtime.context import ContextBuilder
 from runtime.loop import AgentLoop
 from runtime.state import AgentRunResult
+from tools.permissions import PermissionGateway
 from tools.registry import ToolRegistry
+from tools.workspace import Workspace
 
 
 def on_tool_event(kind: str, name: str, payload) -> None:
@@ -63,6 +65,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace", default=None, help="trace 输出路径（默认 memory/traces/）")
     parser.add_argument("--transcript", default=None, help="会话记录路径（默认自动生成）")
     parser.add_argument("--resume", default=None, help="从指定 transcript 继续会话")
+    parser.add_argument(
+        "--permission", choices=["ask", "allow", "deny"], default=None,
+        help="Bash 审批策略；非交互默认 deny（只放行只读，fail-closed）",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -76,7 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     # 继续会话时，默认把新消息继续写回原 transcript 文件
     transcript_path = args.transcript or (args.resume or default_transcript_path(session_id))
 
-    registry = build_registry()
+    # 非交互场景默认 deny（fail-closed）：没有用户在场，未审命令一律不放行
+    policy = args.permission or "deny"
+    workspace = Workspace(Path.cwd())
+    gateway = PermissionGateway(ask_policy=policy, ask_handler=None, remember=False)
+    registry = build_registry(workspace, gateway)
     context_builder = ContextBuilder(Path.cwd(), load_context_config())
     with LLMClient(config) as client:
         result = execute_once(

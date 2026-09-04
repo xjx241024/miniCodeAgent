@@ -1,4 +1,4 @@
-"""Read 工具：读取文件内容，带行号与文件元信息。"""
+"""Read 工具：读取文件内容，带行号与文件元信息（路径经工作空间校验）。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 
 from tools.base import BaseTool, ToolResult
+from tools.workspace import Workspace, WorkspaceError, workspace_error_result
 
 
 class ReadTool(BaseTool):
@@ -22,8 +23,15 @@ class ReadTool(BaseTool):
         "required": ["path"],
     }
 
+    def __init__(self, workspace: Workspace | None = None):
+        # 默认工作空间为当前目录，保证不传参数时行为与旧版一致
+        self.workspace = workspace or Workspace(Path.cwd())
+
     def _run(self, arguments: dict) -> ToolResult:
-        path = Path(str(arguments.get("path", "")))
+        try:
+            path = self.workspace.resolve(str(arguments.get("path", "")))
+        except WorkspaceError as exc:
+            return workspace_error_result(exc)
         if not path.is_file():
             return ToolResult.failure(code="NOT_FOUND", message=f"文件不存在: {path}")
         try:

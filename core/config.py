@@ -74,3 +74,26 @@ def load_context_config(env_file: str | Path = ".env") -> ContextConfig:
         repo_map=os.getenv("CONTEXT_REPO_MAP", "1") in ("1", "true", "True"),
         repo_map_max_lines=int(os.getenv("CONTEXT_REPO_MAP_MAX_LINES", "150")),
     )
+
+
+class SecurityConfig(BaseModel):
+    """安全边界参数（工作空间约束与 Bash 审批）。"""
+
+    ask_policy: str = Field(default="ask", description="Bash 审批策略：ask/allow/deny")
+    remember_choices: bool = Field(default=True, description="会话内是否记住审批选择，避免重复询问")
+
+
+def load_security_config(env_file: str | Path = ".env") -> SecurityConfig:
+    """从 .env 读取安全边界参数（与其余配置共用同一环境文件）。"""
+    env_path = Path(env_file)
+    if env_path.is_file():
+        load_dotenv(env_path)
+    else:
+        load_dotenv()
+    policy = os.getenv("SECURITY_ASK_POLICY", "ask").strip().lower()
+    if policy not in ("ask", "allow", "deny"):
+        policy = "ask"
+    return SecurityConfig(
+        ask_policy=policy,
+        remember_choices=os.getenv("SECURITY_REMEMBER_CHOICES", "1") in ("1", "true", "True"),
+    )

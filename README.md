@@ -29,6 +29,7 @@ uv sync --extra dev
 - M4 变得可靠：读后写三件套 + JSONL trace / transcript + Bash 兜底 + 单轮入口
 - M5 提升一轮能力（已完成）：内容哈希指纹（解决 ABA）+ 超限强制总结（partial 标记）+ 工具提示词工作流 + 默认 20 轮
 - M6 上下文工程（已完成）：L1 系统规则 / L2 项目规则（AGENTS.md + 文件地图）/ L3 会话动态拼装 + 水位检测与 compact
+- M7 安全边界（已完成）：工作空间约束（越界路径一律拒绝）+ Bash 风险分级与用户审批 + 注册中心参数清洗
 
 ## 目录
 
@@ -36,7 +37,7 @@ uv sync --extra dev
 - `runtime/`：ReAct 主循环与运行状态、上下文工程
   - `runtime/context/`：L1/L2/L3 上下文拼装、水位检测与 compact
 - `prompts/`：系统提示词（行为规则 + 工具工作流程）
-- `tools/`：Glob / Grep / Read / Edit / Bash
+- `tools/`：Glob / Grep / Read / Edit / Bash + 工作空间约束（workspace.py）与 Bash 审批（permissions.py）
 - `memory/`：JSONL trace 与会话记录
 - `app/`：交互 CLI 与单轮入口
 - `demo/`：比单元测试更完整的任务演示

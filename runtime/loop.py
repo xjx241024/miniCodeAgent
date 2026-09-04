@@ -43,7 +43,7 @@ class AgentLoop:
         self,
         llm: Any,
         registry: ToolRegistry,
-        max_steps: int = 10,
+        max_steps: int = 20,
         system_prompt: str | None = None,
         on_tool_event: ToolEventCallback | None = None,
         session_id: str | None = None,

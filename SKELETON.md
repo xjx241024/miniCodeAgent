@@ -1,6 +1,6 @@
 # JobAgent 项目骨架说明（最小闭环）
 
-> 状态：规划文档，代码已从 M1 搭建到 M6（上下文工程）。
+> 状态：规划文档，代码已从 M1 搭建到 M7（安全边界）。
 > 参考：`../KamaClaude`（架构与学习地图）、`../MyCodeAgent`（工程纪律）、`../YYHDBL-HelloCodeAgentCli`（最小起点）、`../Extra09-Agent应用开发实践踩坑与经验分享.md`（设计原则来源）。
 
 ## 一、项目定位与目标
@@ -44,6 +44,7 @@
 5. Edit 必须“读过才能改”：读后写 + 乐观锁（mtime / size 校验）+ 原子写入。
 6. 上下文按 L1 系统规则 / L2 项目规则 / L3 动态会话顺序拼接，预留水位检测接口。
 7. 所有工具调用与结果写进 trace，出错可回放；消息写进 transcript，可继续会话。
+8. 安全边界：所有路径必须落在工作空间内；Bash 中高危命令需用户审批（策略 ask/allow/deny）。
 
 ## 四、文件结构
 
@@ -115,6 +116,7 @@ JobAgent/
 - M4 变得可靠（已完成）：Edit 读后写 + 乐观锁 + 原子写入；memory/ 的 JSONL trace / transcript；app/one_shot.py 的 -p 单轮模式；Bash 低频兜底工具。
 - M5 提升一轮能力（已完成）：内容哈希指纹解决 ABA；工具 schema / 系统提示词工作流；grep 支持单文件；超限强制总结 + partial 标记；默认 max_steps=20。
 - M6 上下文工程（已完成）：runtime/context/ 实现 L1 系统规则 / L2 项目规则（AGENTS.md + 文件地图）/ L3 会话动态拼装；token 估算水位检测 + 截断式 compact；LLM 摘要式 compact 预留。
+- M7 安全边界（已完成）：tools/workspace.py 工作空间约束（越界/逃逸拒绝）；tools/permissions.py Bash 风险分级 + 审批网关（ask/allow/deny + 会话记忆）；文件工具接入 workspace；注册中心参数清洗；非交互默认 deny（fail-closed）。
 
 ## 七、验收清单（M4 结束时）
 
@@ -130,6 +132,7 @@ JobAgent/
 - 真实模型联调：配置 .env 后，用 `demo/m3_task.py` 或 `app.one_shot -p "任务"` 跑真实链路。
 - 规划（已确认优先级）：
   - 核心（M6 已完成）：上下文工程（runtime/context/：L1/L2/L3 拼装 + 水位 compact）。
-  - 中等：LLM 摘要式 compact、重复调用检测、间隔复盘回合、read 分段读取、注册中心参数清洗。
+  - 安全（M7 已完成）：工作空间约束 + Bash 审批 + 参数清洗。
+  - 中等（M8 起）：会话连续性与流式交互（单会话复用 loop、~/.jobagent 数据目录、清理机制）、打转/重复调用检测、LLM 摘要式 compact、read 分段读取。
   - 后期：Skills / MCP / 子代理（优先级低，之后再实现）。
   - 求职场景：简历 / 岗位搜索 demo。

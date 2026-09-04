@@ -1,4 +1,4 @@
-"""Grep 工具：按正则表达式在文件或目录中搜索内容，返回带行号的匹配。"""
+"""Grep 工具：按正则表达式在文件或目录中搜索内容，返回带行号的匹配（路径经工作空间校验）。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from tools.base import BaseTool, ToolResult
+from tools.workspace import Workspace, WorkspaceError, workspace_error_result
 
 # 扫描时跳过的目录（相对搜索根判断），避免把依赖和缓存当源码
 SKIP_DIRS = {".venv", ".git", "__pycache__", ".pytest_tmp", ".ruff_cache", "node_modules", ".idea"}
@@ -34,14 +35,20 @@ class GrepTool(BaseTool):
         "required": ["pattern"],
     }
 
+    def __init__(self, workspace: Workspace | None = None):
+        self.workspace = workspace or Workspace(Path.cwd())
+
     def _run(self, arguments: dict) -> ToolResult:
         pattern = str(arguments.get("pattern", ""))
-        target = Path(str(arguments.get("path", ".")))
         max_results = int(arguments.get("max_results", 20))
         try:
-            regex = re.compile(pattern) # 编译正则表达式，如果表达式有误则直接返回失败
+            regex = re.compile(pattern)  # 编译正则表达式，如果表达式有误则直接返回失败
         except re.error as exc:
             return ToolResult.failure(code="INVALID_PATTERN", message=f"正则表达式错误: {exc}")
+        try:
+            target = self.workspace.resolve(str(arguments.get("path", ".")))
+        except WorkspaceError as exc:
+            return workspace_error_result(exc)
 
         if target.is_file():
             # 单文件搜索：path 是文件时直接在该文件内匹配
@@ -49,9 +56,7 @@ class GrepTool(BaseTool):
             candidates = [target]
         elif target.is_dir():
             base = target
-            candidates = (
-                p for p in target.rglob("*") if not _should_skip(p, target)
-            )
+            candidates = (p for p in target.rglob("*") if not _should_skip(p, target))
         else:
             return ToolResult.failure(
                 code="NOT_FOUND",

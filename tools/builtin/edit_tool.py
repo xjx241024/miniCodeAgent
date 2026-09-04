@@ -1,4 +1,4 @@
-"""Edit 工具：修改文件内容（必须先 read，带乐观锁与原子写入）。"""
+"""Edit 工具：修改文件内容（必须先 read，带乐观锁与原子写入；路径经工作空间校验）。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from tools.base import BaseTool, ToolResult
+from tools.workspace import Workspace, WorkspaceError, workspace_error_result
 
 
 class EditTool(BaseTool):
@@ -33,8 +34,14 @@ class EditTool(BaseTool):
         "required": ["path", "old_string", "new_string"],
     }
 
+    def __init__(self, workspace: Workspace | None = None):
+        self.workspace = workspace or Workspace(Path.cwd())
+
     def _run(self, arguments: dict) -> ToolResult:
-        path = Path(str(arguments.get("path", "")))
+        try:
+            path = self.workspace.resolve(str(arguments.get("path", "")))
+        except WorkspaceError as exc:
+            return workspace_error_result(exc)
         old_string = str(arguments.get("old_string", ""))
         new_string = str(arguments.get("new_string", ""))
         # 乐观锁参数由注册中心注入（来自最近一次成功 read）
@@ -83,7 +90,7 @@ class EditTool(BaseTool):
                 "mtime_ms": int(new_stat.st_mtime * 1000),
                 "content_hash": _content_hash(new_content),
             },
-            text=f"已修改 {path}（替换 1 处）",
+            text=f"已修改 {path}",
         )
 
     def _check_conflict(

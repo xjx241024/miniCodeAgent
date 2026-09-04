@@ -1,11 +1,13 @@
-"""工具注册中心：注册、schema 汇总、调用分发，并内置文件读后写保护。"""
+"""工具注册中心：注册、schema 汇总、调用分发，内置文件读后写保护与参数清洗。"""
 
 from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 from tools.base import BaseTool, ToolResult
+from tools.workspace import Workspace, WorkspaceError
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +24,15 @@ class ToolRegistry:
 
     内置读后写保护：read 成功后记录文件指纹（mtime/size/内容哈希），
     edit 前校验"是否读过"与"是否被外部修改"（乐观锁）。
+    路径统一经工作空间解析，防止越界；调用前做参数清洗（类型归一/丢弃未知字段）。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, workspace: Workspace | None = None) -> None:
         self._tools: dict[str, BaseTool] = {}
         # 文件指纹缓存：path -> FileFingerprint，来自最近一次成功 read
         self._read_cache: dict[str, FileFingerprint] = {}
+        # 默认工作空间为当前目录，保证不传参数时行为与旧版一致
+        self.workspace = workspace or Workspace(Path.cwd())
 
     def register(self, tool: BaseTool) -> None:
         """注册工具；同名工具不允许重复注册。"""
@@ -53,12 +58,13 @@ class ToolRegistry:
         return [tool.schema() for tool in self._tools.values()]
 
     def call(self, name: str, arguments: dict) -> ToolResult:
-        """按名字调用工具；对 read / edit 应用读后写保护。"""
+        """按名字调用工具；先做参数清洗，再对 read / edit 应用读后写保护。"""
         tool = self._tools.get(name)
         if tool is None:
             logger.warning("调用未注册的工具: %s", name)
             return ToolResult.failure(code="UNKNOWN_TOOL", message=f"未注册的工具: {name}")
 
+        arguments = self._clean_arguments(name, arguments)
         if name == EDIT_TOOL:
             blocked = self._check_edit_guard(arguments)
             if blocked is not None:
@@ -72,9 +78,9 @@ class ToolRegistry:
 
         # 维护读后写保护状态
         if name == READ_TOOL and result.status == "success":
-            self._note_read(arguments.get("path"), result.data)
+            self._note_read(arguments, result.data)
         if name == EDIT_TOOL and result.status == "success":
-            self._invalidate_read(arguments.get("path"))
+            self._invalidate_read(result.data.get("path"))
 
         if result.status == "error":
             code = result.error.code if result.error else "UNKNOWN"
@@ -83,11 +89,27 @@ class ToolRegistry:
             logger.info("工具调用完成 name=%s status=success ms=%d", name, elapsed_ms)
         return result
 
+    # ---- 参数清洗 ----
+
+    def _clean_arguments(self, name: str, arguments: dict) -> dict:
+        """按工具 schema 归一参数类型，并丢弃未知字段（模型常传错类型或多余字段）。"""
+        tool = self._tools.get(name)
+        if tool is None or not isinstance(arguments, dict):
+            return arguments
+        props = (tool.parameters or {}).get("properties", {})
+        cleaned: dict = {}
+        for key, value in arguments.items():
+            if key not in props:
+                continue  # 未知字段直接丢弃
+            cleaned[key] = _coerce_value(value, props[key].get("type", "string"))
+        return cleaned
+
     # ---- 读后写保护 ----
 
-    def _note_read(self, path: str | None, data: dict) -> None:
-        """记录最近一次成功 read 的文件指纹（mtime/size/内容哈希）。"""
+    def _note_read(self, arguments: dict, data: dict) -> None:
+        """记录最近一次成功 read 的文件指纹；路径键用工具解析后的绝对路径。"""
         required = ("mtime_ms", "size_bytes", "content_hash")
+        path = data.get("path") or arguments.get("path")
         if not path or any(key not in data for key in required):
             return
         self._read_cache[str(path)] = (
@@ -107,15 +129,49 @@ class ToolRegistry:
         这是乐观锁的"检查"阶段，并非互斥锁：只做冲突检测，
         真正写入由 EditTool 用 os.replace 原子完成。
         """
-        path = str(arguments.get("path", ""))
-        fingerprint = self._read_cache.get(path)
+        key = self._resolve_key(str(arguments.get("path", "")))
+        fingerprint = self._read_cache.get(key)
         if fingerprint is None:
             return ToolResult.failure(
                 code="FILE_NOT_READ",
-                message=f"文件未读取: {path}，请先 read 再 edit",
+                message=f"文件未读取: {arguments.get('path', '')}，请先 read 再 edit",
             )
         # 注入 read 时记录的指纹，模型无需自己传
         arguments["mtime_ms"] = fingerprint[0]
         arguments["size_bytes"] = fingerprint[1]
         arguments["content_hash"] = fingerprint[2]
         return None
+
+    def _resolve_key(self, raw: str) -> str:
+        """把 edit 路径解析为与 read 一致的绝对路径键。"""
+        try:
+            return str(self.workspace.resolve(raw))
+        except WorkspaceError:
+            return raw
+
+
+def _coerce_value(value: object, type_name: str) -> object:
+    """按 JSON Schema 类型归一单个参数；转换失败时保留原值。"""
+    if type_name == "string":
+        return value if isinstance(value, str) else str(value)
+    if type_name == "integer":
+        if isinstance(value, bool):
+            return int(value)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if type_name == "number":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if type_name == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes")
+        return bool(value)
+    if type_name == "array" and not isinstance(value, list):
+        return [value]
+    return value

@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from core.config import load_context_config, load_llm_config
+from core.config import load_context_config, load_llm_config, load_security_config
 from core.llm import LLMClient
 from memory.trace import default_trace_path, new_session_id
 from memory.transcript import default_transcript_path
@@ -19,7 +19,9 @@ from tools.builtin.edit_tool import EditTool
 from tools.builtin.glob_tool import GlobTool
 from tools.builtin.grep_tool import GrepTool
 from tools.builtin.read_tool import ReadTool
+from tools.permissions import PermissionDecision, PermissionGateway
 from tools.registry import ToolRegistry
+from tools.workspace import Workspace
 
 console = Console()
 
@@ -27,15 +29,25 @@ console = Console()
 DEFAULT_MAX_STEPS = 20
 
 
-def build_registry() -> ToolRegistry:
-    """组装并注册内置工具：4 个高频原子工具 + Bash 低频兜底。"""
-    registry = ToolRegistry()
-    registry.register(GlobTool())
-    registry.register(GrepTool())
-    registry.register(ReadTool())
-    registry.register(EditTool())
-    registry.register(BashTool())
+def build_registry(workspace=None, bash_permission=None) -> ToolRegistry:
+    """组装并注册内置工具；工作空间与 Bash 审批网关可注入。"""
+    workspace = workspace or Workspace(Path.cwd())
+    registry = ToolRegistry(workspace=workspace)
+    registry.register(GlobTool(workspace))
+    registry.register(GrepTool(workspace))
+    registry.register(ReadTool(workspace))
+    registry.register(EditTool(workspace))
+    registry.register(BashTool(workspace, bash_permission))
     return registry
+
+
+def _ask_user(command: str, decision: PermissionDecision) -> bool:
+    """向用户确认是否允许执行命令；输入 y/yes 放行，其余拒绝。"""
+    answer = console.input(
+        f"[yellow]允许执行命令？[/]\n  {command}\n"
+        f"  [dim]风险: {decision.risk.value} - {decision.reason}[/]\n[y/N] "
+    )
+    return answer.strip().lower() in ("y", "yes")
 
 
 def on_tool_event(kind: str, name: str, payload) -> None:
@@ -67,7 +79,15 @@ def main() -> None:
         console.print("[red]未配置 LLM_API_KEY，请复制 .env.example 为 .env 并填写。[/]")
         return
 
-    registry = build_registry()
+    # 安全边界：工作空间固定为当前目录；Bash 中高危命令询问用户
+    security = load_security_config()
+    workspace = Workspace(Path.cwd())
+    gateway = PermissionGateway(
+        ask_policy=security.ask_policy,
+        ask_handler=_ask_user,
+        remember=security.remember_choices,
+    )
+    registry = build_registry(workspace, gateway)
     # 上下文构建器：负责 L1 系统规则 / L2 项目规则 / L3 会话动态的拼装与水位 compact
     context_builder = ContextBuilder(Path.cwd(), load_context_config())
     console.print(Panel("输入任务开始执行；/exit 退出；Ctrl-C 中断", title="JobAgent CLI"))
