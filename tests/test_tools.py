@@ -6,6 +6,7 @@ from pathlib import Path
 from tools.builtin.glob_tool import GlobTool
 from tools.builtin.read_tool import ReadTool
 from tools.registry import ToolRegistry
+from tools.workspace import Workspace
 
 
 def _make_tree(tmp_path: Path) -> Path:
@@ -115,3 +116,61 @@ def test_registry_logs_on_call(tmp_path, caplog):
         caplog.clear()
         registry.call("nope", {})
     assert "未注册的工具" in caplog.text
+
+
+def _make_noisy_tree(tmp_path: Path) -> Path:
+    """造一棵含噪声/隐藏目录的文件树。"""
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "site.py").write_text("x", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "dep.py").write_text("x", encoding="utf-8")
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / ".hidden" / "secret.py").write_text("x", encoding="utf-8")
+    return tmp_path
+
+
+def test_glob_ignores_noise_and_hidden_by_default(tmp_path):
+    """默认排除隐藏项与常见依赖/构建目录（避免把 .venv 算进工作区）。"""
+    _make_noisy_tree(tmp_path)
+    result = GlobTool(Workspace(tmp_path)).invoke({"pattern": "**/*.py"})
+    assert result.status == "success"
+    assert result.data["paths"] == ["a.py"]
+
+
+def test_glob_include_ignored_brings_noise_back(tmp_path):
+    """include_ignored=True 时包含依赖/构建目录（隐藏项仍需 include_hidden）。"""
+    _make_noisy_tree(tmp_path)
+    result = GlobTool(Workspace(tmp_path)).invoke(
+        {"pattern": "**/*.py", "include_ignored": True}
+    )
+    assert result.status == "success"
+    assert "a.py" in result.data["paths"]
+    assert "node_modules/dep.py" in result.data["paths"]
+    # .venv / .hidden 都以 . 开头，属于隐藏项，还需 include_hidden=True
+    assert ".venv/site.py" not in result.data["paths"]
+    assert ".hidden/secret.py" not in result.data["paths"]
+
+
+def test_glob_include_hidden_brings_hidden_back(tmp_path):
+    """include_hidden=True 时包含点开头目录（仍排除忽略名单）。"""
+    _make_noisy_tree(tmp_path)
+    result = GlobTool(Workspace(tmp_path)).invoke(
+        {"pattern": "**/*.py", "include_hidden": True}
+    )
+    assert result.status == "success"
+    assert ".hidden/secret.py" in result.data["paths"]
+    assert ".venv/site.py" not in result.data["paths"]
+    assert "node_modules/dep.py" not in result.data["paths"]
+
+
+def test_glob_include_both(tmp_path):
+    """两个开关都打开时返回全部匹配。"""
+    _make_noisy_tree(tmp_path)
+    result = GlobTool(Workspace(tmp_path)).invoke(
+        {"pattern": "**/*.py", "include_hidden": True, "include_ignored": True}
+    )
+    assert result.status == "success"
+    assert {"a.py", ".venv/site.py", ".hidden/secret.py", "node_modules/dep.py"} <= set(
+        result.data["paths"]
+    )
