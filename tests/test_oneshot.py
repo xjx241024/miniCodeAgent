@@ -1,5 +1,7 @@
 """one_shot 单轮入口测试：execute_once 与 main 的参数接线。"""
 
+from pathlib import Path
+
 from app import one_shot
 from core.llm import ChatResponse
 from tools.builtin.glob_tool import GlobTool
@@ -75,3 +77,36 @@ def test_main_runs_and_prints(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "完成" in output
     assert trace_path.is_file()
+
+
+def test_main_cwd_switches_directory(tmp_path, monkeypatch, capsys):
+    """--cwd 应先切换工作目录，再以该目录作为任务工作空间。"""
+
+    class FakeConfig:
+        api_key = "test-key"
+
+    class FakeClient:
+        def __init__(self, config):
+            self.config = config
+
+        def __enter__(self):
+            return FakeLLM()
+
+        def __exit__(self, *exc_info):
+            return None
+
+    monkeypatch.setattr(one_shot, "load_llm_config", lambda: FakeConfig())
+    monkeypatch.setattr(one_shot, "LLMClient", FakeClient)
+    monkeypatch.chdir(tmp_path)  # 记录原目录，测试结束自动恢复
+    target = tmp_path / "sub"
+    target.mkdir()
+    code = one_shot.main([
+        "--cwd", str(target),
+        "-p", "打个招呼",
+        "--trace", str(tmp_path / "trace.jsonl"),
+        "--transcript", str(tmp_path / "session.jsonl"),
+    ])
+    assert code == 0
+    assert Path.cwd() == target  # 任务结束后仍停留在 --cwd 目录
+    output = capsys.readouterr().out
+    assert "完成" in output

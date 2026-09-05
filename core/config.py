@@ -24,6 +24,9 @@ class LLMConfig(BaseModel):
     max_retries: int = Field(default=2, description="失败重试次数上限")
     # 重试退避基数（秒），第 n 次等待 base * 2^n
     retry_backoff_seconds: float = Field(default=1.0, description="重试退避基数（秒）")
+    # 流式请求是否附带 stream_options.include_usage：让服务端在最后一块返回 usage，
+    # 否则流式模式无法观测 token 用量与前缀缓存命中（个别网关不支持时可关掉）
+    stream_include_usage: bool = Field(default=True, description="流式请求是否请求 usage")
 
 
 def load_llm_config(env_file: str | Path = ".env") -> LLMConfig:
@@ -45,6 +48,7 @@ def load_llm_config(env_file: str | Path = ".env") -> LLMConfig:
         temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
         max_retries=int(os.getenv("LLM_MAX_RETRIES", "2")),
         retry_backoff_seconds=float(os.getenv("LLM_RETRY_BACKOFF", "1.0")),
+        stream_include_usage=os.getenv("LLM_STREAM_INCLUDE_USAGE", "1") in ("1", "true", "True"),
     )
 
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
 
 from rich.console import Console
@@ -60,6 +62,25 @@ def build_registry(workspace=None, bash_permission=None) -> ToolRegistry:
     return registry
 
 
+def _apply_startup_cwd(argv: list[str] | None = None) -> None:
+    """解析 --cwd <目录> 并切换工作目录（否则以当前目录为工作空间）。
+
+    让 jobagent 可以在任意目录运行：`jobagent --cwd E:/some/project`。
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--cwd" in args:
+        index = args.index("--cwd")
+        if index + 1 >= len(args):
+            console.print("[yellow]用法: jobagent --cwd <目录>[/]")
+            raise SystemExit(1)
+        target = Path(args[index + 1]).expanduser()
+        if not target.is_dir():
+            console.print(f"[red]--cwd 目录不存在: {target}[/]")
+            raise SystemExit(1)
+        os.chdir(target)
+        console.print(f"[dim]工作目录已切换: {Path.cwd()}[/]")
+
+
 def _ask_user(command: str, decision: PermissionDecision) -> bool:
     """向用户确认是否允许执行命令；输入 y/yes 放行，其余拒绝。"""
     answer = console.input(
@@ -107,7 +128,8 @@ def _result_summary(result) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    _apply_startup_cwd(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_llm_config()
     if not config.api_key:

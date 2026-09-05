@@ -15,10 +15,13 @@ uv sync --extra dev
 .venv\Scripts\python.exe -m pytest -q
 
 # 4. 交互式 CLI（单会话：跨轮次保持上下文，最终回答流式输出）
+#    （安装后可简化成 .venv\Scripts\jobagent.exe；--cwd 可指定工作目录）
 .venv\Scripts\python.exe -m app.cli
+.venv\Scripts\python.exe -m app.cli --cwd E:/some/project
 
 # 5. 单轮任务（执行一次即退出）
 .venv\Scripts\python.exe -m app.one_shot -p "找出 tools/builtin 下所有 .py 文件"
+.venv\Scripts\python.exe -m app.one_shot --cwd E:/some/project -p "统计该目录下 .py 文件数"
 ```
 
 ## 交互式 CLI 命令
@@ -53,10 +56,11 @@ uv sync --extra dev
 - M8 会话连续与流式（已完成）：单会话复用（跨轮次历史累积）+ `/new /resume /clean` + 流式最终回答（SSE 聚合）+ 打转检测 + 数据迁移 `~/.jobagent` 与保留清理
 - M9 输出治理与预算（已完成）：超长工具输出全文落盘 `artifacts/`（模型收预览 + 精读提示，不再头部硬截断）+ 用 `usage.prompt_tokens` 实测校准上下文水位（预测 = 上一轮实测 + 新增估算）
 - M9 增强：新增 `write` 工具（新建/整文件覆盖，读后写保护 + 原子写 + 内容上限）+ L1 环境块注入 shell 类型与限制（按平台动态生成）+ `python -c` 拒绝消息给出替代路径 + `glob` 增加 `include_hidden`/`include_ignored`（默认排除噪声目录，可开关）
+- M10 启动与缓存（已完成）：`jobagent` / `jobagent-run` 命令一键启动（仿 claude / codex）+ `--cwd` 任意目录运行 + 流式请求携带 `stream_options.include_usage` 解析用量 + 前缀缓存命中逐轮观测（usage 打日志）
 
 ## 目录
 
-- `core/`：基础层，配置 / 消息 / 模型封装（含流式聚合 `chat_stream_response`）
+- `core/`：基础层，配置 / 消息 / 模型封装（含流式聚合 `chat_stream_response`、前缀缓存用量解析）
 - `runtime/`：ReAct 主循环与运行状态、上下文工程
   - `runtime/context/`：L1/L2/L3 上下文拼装、水位检测与 compact（M9 起用实测 usage 校准）
   - `runtime/session.py`：单会话封装（跨轮次历史 + 自动持久化 + 恢复）

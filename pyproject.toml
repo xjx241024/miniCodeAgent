@@ -17,6 +17,21 @@ dev = [
     "ruff>=0.8",
 ]
 
+# 声明为可打包项目：uv sync 才会安装 [project.scripts] 控制台入口
+[tool.uv]
+package = true
+
+# 顶层包显式发现：排除 tests 与用户测试目录 files_for_test，
+# prompts 为纯数据目录（非包），不参与打包
+[tool.setuptools.packages.find]
+include = ["app*", "core*", "demo*", "memory*", "runtime*", "tools*"]
+exclude = ["tests*", "files_for_test*"]
+
+# 简化启动：安装后直接在任意目录输入 jobagent 即可（仿 claude / codex / mycodeagent）
+[project.scripts]
+jobagent = "app.cli:main"
+jobagent-run = "app.one_shot:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 from app.cli import DEFAULT_MAX_STEPS, build_registry
@@ -69,7 +70,17 @@ def main(argv: list[str] | None = None) -> int:
         "--permission", choices=["ask", "allow", "deny"], default=None,
         help="Bash 审批策略；非交互默认 deny（只放行只读，fail-closed）",
     )
+    parser.add_argument(
+        "--cwd", default=None, help="先切换到该目录再执行任务（与 CLI 的 --cwd 一致）"
+    )
     args = parser.parse_args(argv)
+
+    if args.cwd:
+        target = Path(args.cwd).expanduser()
+        if not target.is_dir():
+            print(f"--cwd 目录不存在: {target}")
+            return 1
+        os.chdir(target)  # 切换后再取 Path.cwd()，让工作空间指向目标目录
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_llm_config()

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from core.llm import usage_cache_tokens
 from core.message import Message, system
 from memory.trace import TraceWriter, new_session_id
 from memory.transcript import TranscriptWriter
@@ -137,6 +138,16 @@ class AgentLoop:
             # 用模型实测 token 校准水位：下一轮预测 = 本轮实测 + 新增估算
             if self.context_builder is not None:
                 self.context_builder.note_usage(response.usage, messages)
+            # 前缀缓存观测：请求体前缀逐字节稳定时服务端命中缓存，可显著降本
+            cached = usage_cache_tokens(response.usage)
+            prompt = response.usage.get("prompt_tokens")
+            hit = f"（{cached * 100 // prompt}% 命中）" if prompt and cached else ""
+            logger.info(
+                "本轮 usage: prompt=%s cached=%s%s",
+                prompt,
+                cached,
+                hit,
+            )
 
             if not response.tool_calls:
                 # 模型直接给出最终回答，任务完成

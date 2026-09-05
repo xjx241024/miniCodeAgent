@@ -36,6 +36,21 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
+def usage_cache_tokens(usage: dict) -> int:
+    """从 usage 提取本次请求命中前缀缓存的 token 数（用于观测缓存是否生效）。
+
+    OpenAI 系在 prompt_tokens_details.cached_tokens，DeepSeek 在 prompt_cache_hit_tokens；
+    前提是请求体前缀（system + 早期消息）逐字节稳定，服务端才会命中缓存。
+    """
+    if not usage:
+        return 0
+    details = usage.get("prompt_tokens_details") or {}
+    cached = int(details.get("cached_tokens") or 0)
+    if cached:
+        return cached
+    return int(usage.get("prompt_cache_hit_tokens") or 0)
+
+
 class LLMClient:
     """Chat Completions 客户端，支持注入 transport 以便测试。"""
 
@@ -55,12 +70,17 @@ class LLMClient:
 
     def _build_payload(self, messages: list[Message], *, stream: bool = False) -> dict:
         """构造请求体：模型名、消息列表、温度、是否流式。"""
-        return {
+        payload = {
             "model": self.config.model_id,
             "messages": [m.to_api_dict() for m in messages],
             "temperature": self.config.temperature,
             "stream": stream,
         }
+        # 流式请求附带 include_usage：让服务端在最后一块返回 usage，
+        # 否则 CLI 流式模式下无法观测 token 用量与前缀缓存命中
+        if stream and self.config.stream_include_usage:
+            payload["stream_options"] = {"include_usage": True}
+        return payload
 
     def _request_once(self, payload: dict, *, stream: bool = False) -> httpx.Response:
         """发一次请求；非 2xx 读取错误体并抛 LLMError。
@@ -154,7 +174,11 @@ class LLMClient:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue  # 跳过无法解析的行，保持流式健壮性
-                delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+                # 结尾的 usage 块 choices 可能为空数组（include_usage 时必有），跳过即可
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {}).get("content")
                 if delta:
                     yield delta
         finally:
@@ -180,6 +204,7 @@ class LLMClient:
         content_parts: list[str] = []
         tool_calls: dict[int, dict] = {}
         finish_reason = ""
+        usage: dict = {}  # include_usage 时服务端在最后一块返回用量
         try:
             for line in resp.iter_lines():
                 line = line.strip()
@@ -192,7 +217,13 @@ class LLMClient:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue  # 跳过无法解析的行，保持流式健壮性
-                choice = chunk.get("choices", [{}])[0]
+                choices = chunk.get("choices") or []
+                if not choices:
+                    # 空 choices 的块通常是携带 usage 的收尾块
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    continue
+                choice = choices[0]
                 if choice.get("finish_reason"):
                     finish_reason = choice["finish_reason"]
                 delta = choice.get("delta") or {}
@@ -233,6 +264,7 @@ class LLMClient:
         return ChatResponse(
             content="".join(content_parts),
             model=self.config.model_id,
+            usage=usage,
             finish_reason=finish_reason,
             tool_calls=calls,
         )

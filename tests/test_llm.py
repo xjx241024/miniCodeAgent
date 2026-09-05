@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from core.config import LLMConfig
-from core.llm import LLMClient, LLMError
-from core.message import user
+from core.llm import LLMClient, LLMError, usage_cache_tokens
+from core.message import assistant, system, user
 
 
 def _make_client(handler, **config_overrides) -> LLMClient:
@@ -237,3 +237,101 @@ def test_chat_stream_response_includes_tools_in_payload():
         client.close()
     assert "tools" in captured["payload"]
     assert captured["payload"]["tools"] == [{"type": "function"}]
+
+
+def test_usage_cache_tokens_openai_style():
+    """OpenAI 系：缓存命中数在 prompt_tokens_details.cached_tokens。"""
+    usage = {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 60}}
+    assert usage_cache_tokens(usage) == 60
+
+
+def test_usage_cache_tokens_deepseek_style():
+    """DeepSeek 系：缓存命中数在 prompt_cache_hit_tokens（顶层）。"""
+    usage = {"prompt_tokens": 100, "prompt_cache_hit_tokens": 40}
+    assert usage_cache_tokens(usage) == 40
+
+
+def test_usage_cache_tokens_absent():
+    """没有用量或没有缓存字段时返回 0，不应抛异常。"""
+    assert usage_cache_tokens({}) == 0
+    assert usage_cache_tokens({"prompt_tokens": 10}) == 0
+
+
+def test_stream_payload_requests_usage():
+    """流式请求应带 stream_options.include_usage，否则拿不到用量。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.read())
+        return httpx.Response(
+            200, text="data: [DONE]\n\n", headers={"Content-Type": "text/event-stream"}
+        )
+
+    client = _make_client(handler)
+    try:
+        client.chat_stream_response([user("hi")])
+    finally:
+        client.close()
+    assert captured["payload"]["stream_options"] == {"include_usage": True}
+
+
+def test_chat_stream_response_parses_usage():
+    """include_usage 时，空 choices 的收尾块携带 usage，应被聚合进结果。"""
+    sse = (
+        'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":12,"prompt_cache_hit_tokens":7}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read())
+        assert payload.get("stream_options") == {"include_usage": True}
+        return httpx.Response(200, text=sse, headers={"Content-Type": "text/event-stream"})
+
+    client = _make_client(handler)
+    try:
+        reply = client.chat_stream_response([user("hi")])
+    finally:
+        client.close()
+    assert reply.content == "你好"
+    assert reply.usage["prompt_tokens"] == 12
+    assert usage_cache_tokens(reply.usage) == 7
+
+
+def test_chat_stream_tolerates_usage_chunk():
+    """chat_stream 也应跳过空 choices 的收尾 usage 块（否则 IndexError）。"""
+    sse = (
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":5}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse, headers={"Content-Type": "text/event-stream"})
+
+    client = _make_client(handler)
+    try:
+        chunks = list(client.chat_stream([user("hi")]))
+    finally:
+        client.close()
+    assert chunks == ["你"]
+
+
+def test_payload_serialization_is_deterministic():
+    """前缀缓存前提：相同消息序列化结果必须逐字节一致（无随机字段）。"""
+    messages = [system("S"), user("hi")]
+    client = _make_client(lambda r: httpx.Response(200, json={"choices": [{"message": {}}]}))
+    try:
+        body1 = client._build_payload(messages)
+        body2 = client._build_payload(messages)  # 再次构造，结果必须完全一致
+    finally:
+        client.close()
+    text1 = json.dumps(body1, ensure_ascii=False, sort_keys=False)
+    text2 = json.dumps(body2, ensure_ascii=False, sort_keys=False)
+    assert text1 == text2
+    # 早期消息逐字节稳定：追加新消息不改写前面已序列化的字节
+    body3 = client._build_payload(messages + [assistant("ok"), user("next")])
+    early = body3["messages"][: len(body1["messages"])]
+    assert json.dumps(early, ensure_ascii=False) == json.dumps(
+        body1["messages"], ensure_ascii=False
+    )
