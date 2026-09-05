@@ -1,9 +1,11 @@
 """memory 层测试：trace 写入/读取/回放，transcript 追加/恢复。"""
 
 import json
+from pathlib import Path
 
 from core.message import assistant, user
 from memory import trace as trace_mod
+from memory.paths import default_data_dir
 from memory.trace import TraceWriter, default_trace_path, load_records, new_session_id
 from memory.transcript import TranscriptWriter, load_messages
 
@@ -69,3 +71,15 @@ def test_default_trace_path_suffix():
     """默认 trace 路径以 session_id 命名 jsonl 文件。"""
     path = default_trace_path("abc123")
     assert path.name == "abc123.jsonl"
+
+
+def test_default_data_dir_env_override(tmp_path, monkeypatch):
+    """JOBAgent_DATA_DIR 环境变量可覆盖默认数据目录。"""
+    monkeypatch.setenv("JOBAgent_DATA_DIR", str(tmp_path))
+    assert default_data_dir() == tmp_path
+
+
+def test_default_data_dir_defaults_to_home(monkeypatch):
+    """未设置环境变量时回退到 ~/.jobagent。"""
+    monkeypatch.delenv("JOBAgent_DATA_DIR", raising=False)
+    assert default_data_dir() == Path.home() / ".jobagent"
