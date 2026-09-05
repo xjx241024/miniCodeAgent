@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import httpx
 from pydantic import BaseModel, Field
 
 from core.config import LLMConfig
-from core.message import Message, ToolCall
+from core.message import FunctionCall, Message, ToolCall
 
 
 class LLMError(Exception):
@@ -159,6 +159,83 @@ class LLMClient:
                     yield delta
         finally:
             resp.close()  # 迭代结束或异常时都释放连接
+
+    def chat_stream_response(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict] | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> ChatResponse:
+        """流式调用并聚合为完整响应（含工具调用片段）。
+
+        边生成边把内容文本交给 on_delta 回调（如实时打印），结束时把
+        delta 里零散的工具调用片段按 index 合并成与 chat() 一致的 ChatResponse，
+        让调用方既能展示又能拿结构化结果。
+        """
+        payload = self._build_payload(messages, stream=True)
+        if tools:
+            payload["tools"] = tools
+        resp = self._post_with_retries(payload, stream=True)
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict] = {}
+        finish_reason = ""
+        try:
+            for line in resp.iter_lines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue  # 跳过无法解析的行，保持流式健壮性
+                choice = chunk.get("choices", [{}])[0]
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta") or {}
+                text = delta.get("content")
+                if text:
+                    content_parts.append(text)
+                    if on_delta is not None:
+                        on_delta(text)
+                # 工具调用按 index 累积：name/arguments 会分多个 delta 片段
+                for item in delta.get("tool_calls") or []:
+                    index = int(item.get("index", 0))
+                    entry = tool_calls.setdefault(
+                        index,
+                        {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                    )
+                    if item.get("id"):
+                        entry["id"] = item["id"]
+                    func = item.get("function") or {}
+                    if func.get("name"):
+                        entry["function"]["name"] += func["name"]
+                    if func.get("arguments"):
+                        entry["function"]["arguments"] += func["arguments"]
+        finally:
+            resp.close()  # 迭代结束或异常时都释放连接
+        calls = []
+        for index in sorted(tool_calls):
+            entry = tool_calls[index]
+            calls.append(
+                ToolCall(
+                    id=entry["id"] or f"call_{index}",
+                    type=entry["type"],
+                    function=FunctionCall(
+                        name=entry["function"]["name"],
+                        arguments=entry["function"]["arguments"],
+                    ),
+                )
+            )
+        return ChatResponse(
+            content="".join(content_parts),
+            model=self.config.model_id,
+            finish_reason=finish_reason,
+            tool_calls=calls,
+        )
 
     def __enter__(self) -> LLMClient:
         return self

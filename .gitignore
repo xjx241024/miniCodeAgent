@@ -18,3 +18,6 @@ build/
 memory/traces/
 memory/transcripts/
 .chat_history
+
+# 用户自行测试用的文件
+files_for_test/

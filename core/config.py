@@ -97,3 +97,23 @@ def load_security_config(env_file: str | Path = ".env") -> SecurityConfig:
         ask_policy=policy,
         remember_choices=os.getenv("SECURITY_REMEMBER_CHOICES", "1") in ("1", "true", "True"),
     )
+
+
+class RetentionConfig(BaseModel):
+    """运行期数据保留参数（trace / transcript / artifact 的清理阈值）。"""
+
+    keep_sessions: int = Field(default=30, description="保留最近多少个会话（超出裁剪）")
+    max_age_days: int = Field(default=30, description="运行文件超过多少天视为过期并清理")
+
+
+def load_retention_config(env_file: str | Path = ".env") -> RetentionConfig:
+    """从 .env 读取数据保留参数（与其余配置共用同一环境文件）。"""
+    env_path = Path(env_file)
+    if env_path.is_file():
+        load_dotenv(env_path)
+    else:
+        load_dotenv()
+    return RetentionConfig(
+        keep_sessions=int(os.getenv("RETENTION_KEEP_SESSIONS", "30")),
+        max_age_days=int(os.getenv("RETENTION_MAX_AGE_DAYS", "30")),
+    )

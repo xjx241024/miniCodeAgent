@@ -28,6 +28,9 @@ ToolEventCallback = Callable[[str, str, Any], None]
 # trace 里单段文本的最大长度，避免超大工具输出撑爆 trace 文件
 TRACE_TEXT_LIMIT = 2000
 
+# 同一工具同参数连续失败达到该次数时，注入"换策略"提示
+REPEATED_FAILURE_LIMIT = 2
+
 
 class AgentLoop:
     """驱动"模型 ↔ 工具"循环的运行时。
@@ -50,6 +53,8 @@ class AgentLoop:
         trace_path: str | Path | None = None,
         transcript_path: str | Path | None = None,
         context_builder: ContextBuilder | None = None,
+        streaming: bool = False,
+        on_text_delta: Callable[[str], None] | None = None,
     ):
         self.llm = llm
         self.registry = registry
@@ -60,6 +65,10 @@ class AgentLoop:
         self.session_id = session_id
         self.trace_path = str(trace_path) if trace_path else None
         self.transcript_path = str(transcript_path) if transcript_path else None
+        self.streaming = streaming
+        self.on_text_delta = on_text_delta
+        # 打转检测：同一工具同参数连续失败的次数
+        self._failure_counts: dict[str, int] = {}
 
     def run(self, task: str, *, history: list[Message] | None = None) -> AgentRunResult:
         """执行一次任务；可传入历史消息以继续之前的会话。"""
@@ -87,6 +96,7 @@ class AgentLoop:
                 )
         finally:
             session.close()
+        result.messages = messages  # 把本轮最终消息回传，供会话层累积历史
         result.session_id = session_id
         result.trace_path = session.trace_path
         result.transcript_path = session.transcript_path
@@ -105,7 +115,9 @@ class AgentLoop:
             # 每轮发请求前做水位检测，超阈值先压缩历史再继续
             if self.context_builder is not None and self.context_builder.needs_compact(messages):
                 before = len(messages)
-                messages = self.context_builder.compact(messages)
+                compacted = self.context_builder.compact(messages)
+                if compacted is not messages:
+                    messages[:] = compacted  # 原地替换，让 run() 拿到压缩后的最终列表
                 if len(messages) != before:
                     record = StepRecord(
                         step=step,
@@ -114,14 +126,16 @@ class AgentLoop:
                     )
                     trace.append(record)
                     session.log_step(record)
-            response = self.llm.chat(messages, tools=self.registry.schemas())
+            response = self._complete(messages, tools=self.registry.schemas())
 
             if not response.tool_calls:
                 # 模型直接给出最终回答，任务完成
+                final_msg = Message(role="assistant", content=response.content)
+                messages.append(final_msg)  # 最终回答也进消息列表，供会话层累积完整历史
                 record = StepRecord(step=step, kind="answer", detail=response.content)
                 trace.append(record)
                 session.log_step(record)
-                session.log_message(Message(role="assistant", content=response.content))
+                session.log_message(final_msg)
                 return AgentRunResult(
                     success=True,
                     answer=response.content,
@@ -162,6 +176,10 @@ class AgentLoop:
                 )
                 messages.append(tool_msg)
                 session.log_message(tool_msg)
+                # 打转检测：同一工具同参数连续失败达到阈值，注入"换策略"提示
+                self._track_repeated_failure(
+                    call.function.name, arguments, result, messages, session
+                )
 
         # 超过步数上限仍未完成：追加一次"禁止工具"的最终总结，向用户如实标记未完成
         summary_prompt = Message(
@@ -173,13 +191,15 @@ class AgentLoop:
         messages.append(summary_prompt)
         session.log_message(summary_prompt)
         try:
-            summary = self.llm.chat(messages).content
+            summary = self._complete(messages).content
         except Exception:
             summary = "达到最大步数仍未完成任务。"
+        summary_msg = Message(role="assistant", content=summary)
+        messages.append(summary_msg)  # 强制总结同样回传，保证 result.messages 完整
         final_record = StepRecord(step=self.max_steps + 1, kind="answer", detail=summary)
         trace.append(final_record)
         session.log_step(final_record)
-        session.log_message(Message(role="assistant", content=summary))
+        session.log_message(summary_msg)
         return AgentRunResult(
             success=False,
             answer=summary,
@@ -189,6 +209,34 @@ class AgentLoop:
             partial=True,
             trace=trace,
         )
+
+    def _complete(self, messages: list[Message], tools: list[dict] | None = None) -> Any:
+        """发起一轮模型调用；开启流式且模型支持流式聚合时用流式（便于实时展示）。"""
+        if self.streaming and hasattr(self.llm, "chat_stream_response"):
+            return self.llm.chat_stream_response(messages, tools=tools, on_delta=self.on_text_delta)
+        return self.llm.chat(messages, tools=tools)
+
+    def _track_repeated_failure(self, name, arguments, result, messages, session) -> None:
+        """打转检测：工具连续失败时追加一条"换策略"提示，避免模型原地打转。"""
+        key = _call_key(name, arguments)
+        if result.status != "error":
+            self._failure_counts.pop(key, None)
+            return
+        count = self._failure_counts.get(key, 0) + 1
+        self._failure_counts[key] = count
+        if count < REPEATED_FAILURE_LIMIT:
+            return
+        self._failure_counts[key] = 0  # 已提示过，重置计数避免无限刷屏
+        hint = Message(
+            role="user",
+            content=(
+                f"（系统提示：工具 {name} 已连续失败 {count} 次，"
+                f"参数 {json.dumps(arguments, ensure_ascii=False)}。"
+                "请不要再重复同样的调用，换一种策略：换路径、换工具或换关键词。）"
+            ),
+        )
+        messages.append(hint)
+        session.log_message(hint)
 
     def _emit(self, kind: str, name: str, payload: Any) -> None:
         """触发事件回调（如果有）。"""
@@ -243,6 +291,11 @@ class _SessionLogger:
             self._trace.close()
         if self._transcript is not None:
             self._transcript.close()
+
+
+def _call_key(name: str, arguments: dict) -> str:
+    """生成工具调用的稳定指纹：工具名 + 排序后的参数 JSON。"""
+    return f"{name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}"
 
 
 def _tool_payload(arguments: dict, result: ToolResult) -> dict:

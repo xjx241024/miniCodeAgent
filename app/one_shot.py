@@ -78,9 +78,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     session_id = new_session_id()
-    trace_path = args.trace or default_trace_path(session_id)
+    # 数据落盘到 ~/.jobagent/<项目哈希>/ 下（与 CLI 一致）
+    workspace_root = Path.cwd()
+    trace_path = args.trace or default_trace_path(session_id, workspace_root=workspace_root)
     # 继续会话时，默认把新消息继续写回原 transcript 文件
-    transcript_path = args.transcript or (args.resume or default_transcript_path(session_id))
+    transcript_path = args.transcript or (
+        args.resume or default_transcript_path(session_id, workspace_root=workspace_root)
+    )
 
     # 非交互场景默认 deny（fail-closed）：没有用户在场，未审命令一律不放行
     policy = args.permission or "deny"

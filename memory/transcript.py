@@ -8,14 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.message import Message
-
-# 默认会话记录目录：相对本文件定位到项目根
-TRANSCRIPTS_DIR = Path(__file__).resolve().parents[1] / "memory" / "transcripts"
-
-
-def default_transcript_path(session_id: str) -> Path:
-    """返回默认会话记录路径：memory/transcripts/{session_id}.jsonl。"""
-    return TRANSCRIPTS_DIR / f"{session_id}.jsonl"
+from memory.paths import default_transcript_path  # noqa: F401  # 默认路径迁移到 ~/.jobagent
 
 
 class TranscriptWriter:

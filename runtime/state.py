@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from core.message import Message
+
 
 @dataclass
 class StepRecord:
@@ -28,6 +30,7 @@ class AgentRunResult:
     reason: str = ""            # 结束原因：completed / max_steps / error
     partial: bool = False       # 是否只是阶段性结果（任务未完成，含强制总结）
     trace: list[StepRecord] = field(default_factory=list)
+    messages: list[Message] = field(default_factory=list)  # 本轮最终消息列表（含 system）
     session_id: str = ""        # 本次运行会话 id（对应 trace / transcript 文件名）
     trace_path: str = ""        # trace 落盘路径（若启用）
     transcript_path: str = ""   # 会话记录落盘路径（若启用）

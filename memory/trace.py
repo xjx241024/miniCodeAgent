@@ -8,19 +8,13 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
-# 默认 trace 目录：相对本文件定位到项目根，保证任意工作目录下都能找到
-TRACES_DIR = Path(__file__).resolve().parents[1] / "memory" / "traces"
+from memory.paths import default_trace_path  # noqa: F401  # 默认路径迁移到 ~/.jobagent
 
 
 def new_session_id() -> str:
     """生成一次运行的会话 id：时间戳 + 随机后缀，保证可读且唯一。"""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"{stamp}-{uuid.uuid4().hex[:6]}"
-
-
-def default_trace_path(session_id: str) -> Path:
-    """返回默认 trace 文件路径：memory/traces/{session_id}.jsonl。"""
-    return TRACES_DIR / f"{session_id}.jsonl"
 
 
 class TraceWriter:

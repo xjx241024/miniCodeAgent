@@ -1,4 +1,4 @@
-"""交互式命令行：输入任务 → Agent 执行 → 实时展示工具调用与最终回答。"""
+"""交互式命令行：单会话持续对话，跨轮次保持上下文，支持流式输出（M8）。"""
 
 from __future__ import annotations
 
@@ -8,12 +8,17 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from core.config import load_context_config, load_llm_config, load_security_config
+from core.config import (
+    load_context_config,
+    load_llm_config,
+    load_retention_config,
+    load_security_config,
+)
 from core.llm import LLMClient
-from memory.trace import default_trace_path, new_session_id
-from memory.transcript import default_transcript_path
+from memory import retention
+from memory.paths import default_data_dir
 from runtime.context import ContextBuilder
-from runtime.loop import AgentLoop
+from runtime.session import AgentSession
 from tools.builtin.bash_tool import BashTool
 from tools.builtin.edit_tool import EditTool
 from tools.builtin.glob_tool import GlobTool
@@ -27,6 +32,18 @@ console = Console()
 
 # 默认最大工具调用轮数；配合超限"强制总结"，任务未完成也能给出阶段性结果
 DEFAULT_MAX_STEPS = 20
+
+
+class _StreamSink:
+    """接收流式文本并实时打印；记录是否输出过内容，用于结束后回退面板。"""
+
+    def __init__(self) -> None:
+        self.any_text = False
+
+    def on_delta(self, text: str) -> None:
+        """把增量文本原样打印（不解析 rich 标记，避免内容被误渲染）。"""
+        self.any_text = True
+        console.print(text, end="", markup=False)
 
 
 def build_registry(workspace=None, bash_permission=None) -> ToolRegistry:
@@ -44,7 +61,7 @@ def build_registry(workspace=None, bash_permission=None) -> ToolRegistry:
 def _ask_user(command: str, decision: PermissionDecision) -> bool:
     """向用户确认是否允许执行命令；输入 y/yes 放行，其余拒绝。"""
     answer = console.input(
-        f"[yellow]允许执行命令？[/]\n  {command}\n"
+        f"[yellow]是否允许执行命令？(y-允许，n-拒绝)[/]\n  {command}\n"
         f"  [dim]风险: {decision.risk.value} - {decision.reason}[/]\n[y/N] "
     )
     return answer.strip().lower() in ("y", "yes")
@@ -72,6 +89,22 @@ def _result_panel(result) -> Panel:
     return Panel(result.answer, title=f"未完成: {result.reason}", border_style="red")
 
 
+def _result_summary(result) -> str:
+    """流式输出后的一行状态摘要（回答已实时展示，无需再重复面板）。"""
+    if result.reason == "completed":
+        label = f"[green]✓ 完成（{result.steps_used} 步）[/]"
+    elif result.partial:
+        label = "[yellow]⚠ 未完成（已达步数上限，以上为阶段性总结）[/]"
+    else:
+        label = f"[red]✗ 未完成: {result.reason}[/]"
+    lines = [label]
+    if result.trace_path:
+        lines.append(f"[dim]trace: {result.trace_path}[/]")
+    if result.transcript_path:
+        lines.append(f"[dim]transcript: {result.transcript_path}[/]")
+    return "\n".join(lines)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_llm_config()
@@ -90,9 +123,45 @@ def main() -> None:
     registry = build_registry(workspace, gateway)
     # 上下文构建器：负责 L1 系统规则 / L2 项目规则 / L3 会话动态的拼装与水位 compact
     context_builder = ContextBuilder(Path.cwd(), load_context_config())
-    console.print(Panel("输入任务开始执行；/exit 退出；Ctrl-C 中断", title="JobAgent CLI"))
+
+    # 启动时清理过期 trace / transcript / artifact，避免长期堆积占空间
+    data_dir = default_data_dir()
+    retention_cfg = load_retention_config()
+    removed = retention.prune(
+        data_dir,
+        keep_sessions=retention_cfg.keep_sessions,
+        max_age_days=retention_cfg.max_age_days,
+        workspace_root=Path.cwd(),
+    )
+    if removed:
+        console.print(f"[dim]已清理 {removed} 个过期运行文件[/]")
+
+    console.print(
+        Panel(
+            "输入任务执行；/new 新会话  /resume <路径> 继续  /clean 清理  /exit 退出",
+            title="JobAgent CLI",
+        )
+    )
+
+    # 流式渲染：实时展示最终回答；会话内复用同一个 AgentSession
+    sink = _StreamSink()
 
     with LLMClient(config) as client:
+        def new_session(resume: str | None = None) -> AgentSession:
+            """创建（或从 transcript 恢复）一个持续会话，并接上流式回调。"""
+            return AgentSession(
+                client,
+                registry,
+                context_builder,
+                max_steps=DEFAULT_MAX_STEPS,
+                workspace_root=Path.cwd(),
+                streaming=True,
+                on_text_delta=sink.on_delta,
+                on_tool_event=on_tool_event,
+                resume=resume,
+            )
+
+        session = new_session()
         while True:
             try:
                 task = input("> ").strip()
@@ -104,24 +173,45 @@ def main() -> None:
             if task in ("/exit", "/quit"):
                 return
             if task == "/help":
-                console.print("输入任务即可执行；/exit 退出。")
+                console.print(
+                    "/new 新会话；/resume <transcript 路径> 继续旧会话；"
+                    "/clean 清理过期数据；/exit 退出"
+                )
+                continue
+            if task == "/new":
+                session = new_session()
+                console.print("[dim]已开始新会话。[/]")
+                continue
+            if task.startswith("/resume"):
+                path = task[len("/resume"):].strip()
+                if not path:
+                    console.print("[yellow]用法: /resume <transcript 文件路径>[/]")
+                    continue
+                session = new_session(resume=path)
+                console.print(f"[dim]已从 {path} 继续会话（{len(session.history)} 条历史）。[/]")
+                continue
+            if task == "/clean":
+                removed = retention.prune(
+                    data_dir,
+                    keep_sessions=retention_cfg.keep_sessions,
+                    max_age_days=retention_cfg.max_age_days,
+                    workspace_root=Path.cwd(),
+                )
+                console.print(f"[dim]已清理 {removed} 个过期运行文件。[/]")
                 continue
 
-            # 每次任务独立会话：trace / transcript 自动落到 memory/ 下
-            session_id = new_session_id()
-            loop = AgentLoop(
-                client,
-                registry,
-                max_steps=DEFAULT_MAX_STEPS,
-                on_tool_event=on_tool_event,
-                session_id=session_id,
-                trace_path=default_trace_path(session_id),
-                transcript_path=default_transcript_path(session_id),
-                context_builder=context_builder,
-            )
-            result = loop.run(task)
-            console.print(_result_panel(result))
-            console.print(f"[dim]trace: {result.trace_path}[/]")
+            sink.any_text = False  # 每轮重置，判断本轮是否真的有流式输出
+            result = session.ask(task)
+            console.print()  # 结束流式行
+            if sink.any_text:
+                console.print(_result_summary(result))
+            else:
+                # 未走流式（模型不支持或出错兜底）：用面板完整展示结果
+                console.print(_result_panel(result))
+                if result.trace_path:
+                    console.print(f"[dim]trace: {result.trace_path}[/]")
+                if result.transcript_path:
+                    console.print(f"[dim]transcript: {result.transcript_path}[/]")
 
 
 if __name__ == "__main__":

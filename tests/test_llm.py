@@ -168,3 +168,72 @@ def test_chat_with_tools_returns_tool_calls():
     assert len(reply.tool_calls) == 1
     assert reply.tool_calls[0].function.name == "read"
     assert reply.tool_calls[0].function.arguments == '{"path": "a.py"}'
+
+
+def test_chat_stream_response_aggregates_content():
+    """流式聚合：SSE 分片拼成完整文本，并逐段触发 on_delta。"""
+    sse = (
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read())
+        assert payload.get("stream") is True
+        return httpx.Response(200, text=sse, headers={"Content-Type": "text/event-stream"})
+
+    client = _make_client(handler)
+    deltas: list[str] = []
+    try:
+        reply = client.chat_stream_response([user("hi")], on_delta=deltas.append)
+    finally:
+        client.close()
+    assert reply.content == "你好"
+    assert deltas == ["你", "好"]
+
+
+def test_chat_stream_response_merges_tool_call_deltas():
+    """流式工具调用：name/arguments 分片按 index 合并为一个 ToolCall。"""
+    sse = (
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+        '"function":{"name":"glob","arguments":""}}]}}]}\n\n'
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+        '"function":{"arguments":"{\\"pattern\\":\\"*.py\\"}"}}]}}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse, headers={"Content-Type": "text/event-stream"})
+
+    client = _make_client(handler)
+    try:
+        reply = client.chat_stream_response([user("hi")])
+    finally:
+        client.close()
+    assert len(reply.tool_calls) == 1
+    call = reply.tool_calls[0]
+    assert call.id == "call_1"
+    assert call.function.name == "glob"
+    assert '"pattern"' in call.function.arguments
+    assert reply.finish_reason == "tool_calls"
+
+
+def test_chat_stream_response_includes_tools_in_payload():
+    """传入 tools 时，流式请求体应带上 tools 字段。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.read())
+        return httpx.Response(
+            200, text="data: [DONE]\n\n", headers={"Content-Type": "text/event-stream"}
+        )
+
+    client = _make_client(handler)
+    try:
+        client.chat_stream_response([user("hi")], tools=[{"type": "function"}])
+    finally:
+        client.close()
+    assert "tools" in captured["payload"]
+    assert captured["payload"]["tools"] == [{"type": "function"}]

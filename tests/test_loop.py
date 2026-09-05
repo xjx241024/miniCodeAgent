@@ -72,3 +72,41 @@ def test_loop_stops_at_max_steps_with_partial_summary():
     assert fake.calls == 4  # 3 轮工具 + 1 次强制总结
     # trace 最后一条是总结
     assert result.trace[-1].kind == "answer"
+
+
+def test_loop_injects_hint_after_repeated_failure(tmp_path):
+    """同一工具同参数连续失败达到阈值后，注入一条"换策略"提示。"""
+    # 不存在的子目录会让 glob 返回 NOT_FOUND 错误 → 连续失败
+    bad = f'{{"pattern": "*.py", "path": "{(tmp_path / "no_such_dir").as_posix()}"}}'
+    fake = FakeLLM([
+        _tool_call_response("glob", bad),
+        _tool_call_response("glob", bad),
+        ChatResponse(content="换策略完成"),
+    ])
+    loop = AgentLoop(fake, _make_registry(), max_steps=10)
+    result = loop.run("找文件")
+    assert result.success is True
+    assert result.answer == "换策略完成"
+    hints = [m for m in result.messages if m.role == "user" and "已连续失败" in m.content]
+    assert len(hints) == 1
+
+
+def test_loop_result_messages_include_final_answer():
+    """结果消息列表应包含最终回答，供会话层累积完整历史。"""
+    fake = FakeLLM([ChatResponse(content="最终回答")])
+    result = AgentLoop(fake, _make_registry()).run("任务")
+    assert result.messages[-1].role == "assistant"
+    assert result.messages[-1].content == "最终回答"
+
+
+def test_loop_result_messages_include_tool_turn(tmp_path):
+    """工具调用轮次的消息结构：system → user → assistant(调用) → tool → assistant(回答)。"""
+    path_str = tmp_path.as_posix()
+    fake = FakeLLM([
+        _tool_call_response("glob", f'{{"pattern": "*.py", "path": "{path_str}"}}'),
+        ChatResponse(content="完成"),
+    ])
+    result = AgentLoop(fake, _make_registry()).run("找文件")
+    assert [m.role for m in result.messages] == [
+        "system", "user", "assistant", "tool", "assistant",
+    ]

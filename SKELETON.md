@@ -1,6 +1,6 @@
 # JobAgent 项目骨架说明（最小闭环）
 
-> 状态：规划文档，代码已从 M1 搭建到 M7（安全边界）。
+> 状态：规划文档，代码已从 M1 搭建到 M8（会话连续与流式）。
 > 参考：`../KamaClaude`（架构与学习地图）、`../MyCodeAgent`（工程纪律）、`../YYHDBL-HelloCodeAgentCli`（最小起点）、`../Extra09-Agent应用开发实践踩坑与经验分享.md`（设计原则来源）。
 
 ## 一、项目定位与目标
@@ -45,6 +45,8 @@
 6. 上下文按 L1 系统规则 / L2 项目规则 / L3 动态会话顺序拼接，预留水位检测接口。
 7. 所有工具调用与结果写进 trace，出错可回放；消息写进 transcript，可继续会话。
 8. 安全边界：所有路径必须落在工作空间内；Bash 中高危命令需用户审批（策略 ask/allow/deny）。
+9. 会话连续：同一会话复用单个 loop 并累积 history（跨轮次上下文）；trace/transcript 落到 ~/.jobagent，支持 /resume 恢复。
+10. 打转检测：同一工具同参数连续失败达到阈值时注入"换策略"提示，避免无效轮次。
 
 ## 四、文件结构
 
@@ -61,8 +63,10 @@ JobAgent/
 │   ├── llm.py               # OpenAI-compatible 模型封装（流式 / 非流式 / 重试）
 │   └── message.py           # 消息结构：system / user / assistant / tool
 ├── runtime/                 # 运行时层
-│   ├── loop.py              # ReAct AgentLoop（max_steps、trace/transcript 落盘）
-│   └── state.py             # 会话状态与步骤记录
+│   ├── loop.py              # ReAct AgentLoop（max_steps、流式、打转检测、落盘）
+│   ├── session.py           # 单会话封装（跨轮次历史 + 自动持久化 + 恢复）
+│   ├── state.py             # 会话状态与步骤记录
+│   └── context/             # 上下文工程（L1/L2/L3 + 水位 compact）
 ├── tools/                   # 工具层
 │   ├── base.py              # 工具基类 + 统一响应协议
 │   ├── registry.py          # 注册、JSON Schema 生成、调用分发、读后写保护
@@ -78,18 +82,25 @@ JobAgent/
 ├── prompts/
 │   └── system.md            # 系统提示词（行为规则 + 工具使用示例）
 ├── memory/
+│   ├── paths.py             # 运行期数据目录（~/.jobagent/<项目哈希>/）
+│   ├── retention.py         # 按会话数 / 天数清理过期运行数据
 │   ├── trace.py             # JSONL trace 写入与读取（可回放）
 │   └── transcript.py        # append-only 会话记录（可继续会话）
 ├── demo/                    # 较完整的任务演示 / 集成验证脚本
 │   ├── __init__.py
 │   ├── m1_chat.py           # M1 演示：一次对话闭环
 │   ├── m2_tool_call.py      # M2 演示：模型自主调用工具
-│   └── m3_task.py           # M3 演示：搜索 → 读取 → 总结
+│   ├── m3_task.py           # M3 演示：搜索 → 读取 → 总结
+│   ├── m6_context.py        # M6 演示：上下文拼装 / 水位 compact
+│   ├── m7_security.py       # M7 演示：工作空间约束 + Bash 审批
+│   └── m8_session.py        # M8 演示：单会话持续对话 + 恢复
 └── tests/
-    ├── test_message.py / test_llm.py   # M1 基础层
+    ├── test_message.py / test_llm.py   # M1 基础层（含流式聚合）
     ├── test_tools.py / test_grep_tool.py / test_edit_tool.py  # M2/M3 工具
     ├── test_loop.py / test_loop_trace.py   # M3/M4 循环与落盘
     ├── test_memory.py       # trace / transcript
+    ├── test_session.py      # M8 单会话历史 / 恢复
+    ├── test_retention.py    # M8 数据保留清理
     ├── test_oneshot.py      # 单轮入口
     └── test_bash_tool.py    # Bash 兜底工具
 ```
@@ -105,6 +116,9 @@ JobAgent/
 - tools/builtin/bash_tool.py：低频兜底命令，命中禁止模式直接拒绝，超时 / 非零退出按错误码返回。
 - memory/trace.py：每轮记录时间、会话、消息、工具名、参数、结果，用于排查和面试演示“可观测性”。
 - memory/transcript.py：append-only 记录消息，配合 history 参数实现“读档继续”。
+- runtime/session.py：持有单个 AgentLoop 与 history，每次 ask 把新增消息并入历史并写回 transcript，支持 resume 从既有 transcript 恢复。
+- memory/paths.py：把运行期数据统一放到 ~/.jobagent/<项目哈希>/，避免污染被操作的仓库；JOBAgent_DATA_DIR 可覆盖。
+- memory/retention.py：按会话数量与保存天数清理 trace / transcript / artifact，配合 CLI 启动 / /clean 自动执行。
 - app/one_shot.py：`-p "任务"` 单轮执行并退出，`--resume` 可继续会话。
 - demo/：比单元测试更完整的任务演示脚本，可跑通真实链路。
 
@@ -117,6 +131,7 @@ JobAgent/
 - M5 提升一轮能力（已完成）：内容哈希指纹解决 ABA；工具 schema / 系统提示词工作流；grep 支持单文件；超限强制总结 + partial 标记；默认 max_steps=20。
 - M6 上下文工程（已完成）：runtime/context/ 实现 L1 系统规则 / L2 项目规则（AGENTS.md + 文件地图）/ L3 会话动态拼装；token 估算水位检测 + 截断式 compact；LLM 摘要式 compact 预留。
 - M7 安全边界（已完成）：tools/workspace.py 工作空间约束（越界/逃逸拒绝）；tools/permissions.py Bash 风险分级 + 审批网关（ask/allow/deny + 会话记忆）；文件工具接入 workspace；注册中心参数清洗；非交互默认 deny（fail-closed）。
+- M8 会话连续与流式（已完成）：runtime/session.py 单会话复用 + 历史累积；memory/paths.py 迁移 ~/.jobagent、memory/retention.py 保留清理；core/llm.py chat_stream_response 流式聚合（含工具调用分片）；loop 打转检测；CLI 增加 /new /resume /clean 与流式输出。
 
 ## 七、验收清单（M4 结束时）
 
