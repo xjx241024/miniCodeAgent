@@ -63,6 +63,7 @@ class AgentSession:
             streaming=streaming,
             on_text_delta=on_text_delta,
             on_tool_event=on_tool_event,
+            data_dir=data_dir,
         )
 
     def ask(self, task: str) -> AgentRunResult:

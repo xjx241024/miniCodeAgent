@@ -34,6 +34,9 @@ class ContextBuilder:
         self.config = config or ContextConfig()
         self._loader = ProjectRulesLoader(self.cwd)
         self._system_text: str | None = None
+        # 上一轮模型实测的输入 token 数（来自 usage.prompt_tokens），None 表示尚无实测
+        self._last_prompt_tokens: int | None = None
+        self._last_seen_len: int = 0  # note_usage 时的消息条数，用于估算"新增"部分
 
     # ---- L1 系统规则（全局固定）----
 
@@ -93,9 +96,29 @@ class ContextBuilder:
         return estimate_messages_tokens(messages)
 
     def needs_compact(self, messages: list[Message]) -> bool:
-        """水位检测：估算 token 达到预算 * compact_ratio 即触发压缩。"""
+        """水位检测：估算 token 达到预算 * compact_ratio 即触发压缩。
+
+        有实测用量时用"上一轮实测 + 本轮新增估算"预测下一轮请求大小，
+        因为真实 tokenizer 的计费通常比启发式更准（两者取较大值，偏保守）。
+        """
         trigger = int(self.config.max_tokens * self.config.compact_ratio)
-        return self.estimate_tokens(messages) >= trigger
+        predicted = self.estimate_tokens(messages)
+        if self._last_prompt_tokens is not None:
+            # compact 后消息数可能变少，此时新增无法精确定位，回退为全量估算
+            if self._last_seen_len <= len(messages):
+                added = messages[self._last_seen_len:]
+                predicted = self._last_prompt_tokens + estimate_messages_tokens(added)
+            else:
+                predicted = max(predicted, self._last_prompt_tokens)
+        return predicted >= trigger
+
+    def note_usage(self, usage: dict, messages: list[Message]) -> None:
+        """记录上一轮模型实测的输入 token 数，供下一轮水位预测使用。"""
+        tokens = (usage or {}).get("prompt_tokens")
+        if tokens is None:
+            return  # 无实测（假模型/旧接口），保持纯估算
+        self._last_prompt_tokens = int(tokens)
+        self._last_seen_len = len(messages)
 
     def compact(self, messages: list[Message]) -> list[Message]:
         """截断式 compact：保留 system 与最近 keep_turns 个原子单元，旧的折叠为占位。

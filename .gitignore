@@ -21,3 +21,6 @@ memory/transcripts/
 
 # 用户自行测试用的文件
 files_for_test/
+
+# 运行数据存放目录
+.jobagent/

@@ -193,3 +193,34 @@ def test_loop_logs_context_record_when_over_budget(tmp_path):
     result = AgentLoop(FakeLLM(), registry, max_steps=10, context_builder=builder).run("找文件")
     assert result.success is True
     assert any(step.kind == "context" for step in result.trace)
+
+
+def test_note_usage_lifts_watermark(tmp_path):
+    """记录实测 token 后，水位预测 = 上一轮实测 + 新增估算（比纯估算更敏感）。"""
+    builder = ContextBuilder(tmp_path, ContextConfig(max_tokens=200))
+    messages = [system("s" * 100), user("任务")]  # 估算很小，不触发
+    assert builder.needs_compact(messages) is False
+    # 模型实测上一轮输入已达 180 token → 下一轮预测超水位
+    builder.note_usage({"prompt_tokens": 180}, messages)
+    assert builder.needs_compact(messages) is True
+
+
+def test_note_usage_ignores_missing_usage(tmp_path):
+    """无 usage（假模型/旧接口）时保持纯估算，不改变水位行为。"""
+    builder = ContextBuilder(tmp_path, ContextConfig(max_tokens=10000))
+    messages = [system("s" * 100), user("任务")]
+    builder.note_usage({}, messages)
+    builder.note_usage(None, messages)
+    assert builder.needs_compact(messages) is False
+
+
+def test_note_usage_after_compact_falls_back(tmp_path):
+    """compact 折叠后消息数变少，新增无法定位时回退 max(估算, 实测)。"""
+    builder = ContextBuilder(tmp_path, ContextConfig(max_tokens=200, keep_turns=1))
+    messages = [system("s" * 100)] + [m for i in range(4) for m in _tool_unit(i)]
+    builder.note_usage({"prompt_tokens": 50}, messages)
+    compacted = builder.compact(messages)
+    assert compacted is not messages
+    assert len(compacted) < len(messages)  # 4 个工具组被折叠为 1 组
+    # _last_seen_len 已大于压缩后消息数，水位判断回退保守值且不崩溃
+    assert isinstance(builder.needs_compact(compacted), bool)

@@ -110,3 +110,21 @@ def test_loop_result_messages_include_tool_turn(tmp_path):
     assert [m.role for m in result.messages] == [
         "system", "user", "assistant", "tool", "assistant",
     ]
+
+
+def test_loop_governs_large_tool_output(tmp_path):
+    """大工具输出经输出治理：tool 消息变预览，artifact 全文落盘。"""
+    for i in range(300):
+        (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
+    registry = _make_registry()
+    fake = FakeLLM([
+        _tool_call_response("glob", f'{{"pattern": "*", "path": "{tmp_path.as_posix()}"}}'),
+        ChatResponse(content="完成"),
+    ])
+    loop = AgentLoop(fake, registry, max_steps=10, data_dir=tmp_path)
+    result = loop.run("找文件")
+    assert result.success is True
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert any("完整内容已保存到" in m.content for m in tool_msgs)
+    artifacts = list(loop.output_guard.artifact_dir.glob("*.txt"))
+    assert len(artifacts) == 1

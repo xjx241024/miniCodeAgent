@@ -76,8 +76,8 @@ def test_timeout_reported(monkeypatch):
     assert result.error is not None and result.error.code == "TIMEOUT"
 
 
-def test_long_output_truncated(monkeypatch):
-    """超长输出被截断，避免撑爆上下文。"""
+def test_long_output_preserved_for_governance(monkeypatch):
+    """超长输出不再头部硬截断（信息保留），全文交给上层输出治理。"""
     big = "x" * 10000
 
     def fake_run(command, **kwargs):
@@ -86,5 +86,17 @@ def test_long_output_truncated(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     result = BashTool().invoke({"command": "echo big"})
     assert result.status == "success"
-    assert "…" in result.text
-    assert len(result.text) < 5000
+    assert result.text == big  # 正文完整返回，由 runtime.output_guard 落盘 + 预览
+
+
+def test_absurd_output_still_bounded(monkeypatch):
+    """超出保护上限（防内存爆炸）的极端输出仍被截断。"""
+    huge = "x" * 500_000
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=huge, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = BashTool().invoke({"command": "echo huge"})
+    assert result.status == "success"
+    assert len(result.text) < 210_000

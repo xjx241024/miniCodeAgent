@@ -51,13 +51,15 @@ uv sync --extra dev
 - M6 上下文工程（已完成）：L1 系统规则 / L2 项目规则（AGENTS.md + 文件地图）/ L3 会话动态拼装 + 水位检测与 compact
 - M7 安全边界（已完成）：工作空间约束（越界路径一律拒绝）+ Bash 风险分级与用户审批 + 注册中心参数清洗
 - M8 会话连续与流式（已完成）：单会话复用（跨轮次历史累积）+ `/new /resume /clean` + 流式最终回答（SSE 聚合）+ 打转检测 + 数据迁移 `~/.jobagent` 与保留清理
+- M9 输出治理与预算（已完成）：超长工具输出全文落盘 `artifacts/`（模型收预览 + 精读提示，不再头部硬截断）+ 用 `usage.prompt_tokens` 实测校准上下文水位（预测 = 上一轮实测 + 新增估算）
 
 ## 目录
 
 - `core/`：基础层，配置 / 消息 / 模型封装（含流式聚合 `chat_stream_response`）
 - `runtime/`：ReAct 主循环与运行状态、上下文工程
-  - `runtime/context/`：L1/L2/L3 上下文拼装、水位检测与 compact
+  - `runtime/context/`：L1/L2/L3 上下文拼装、水位检测与 compact（M9 起用实测 usage 校准）
   - `runtime/session.py`：单会话封装（跨轮次历史 + 自动持久化 + 恢复）
+  - `runtime/output_guard.py`：超长工具输出治理（全文落盘 + 预览提示）
 - `prompts/`：系统提示词（行为规则 + 工具工作流程）
 - `tools/`：Glob / Grep / Read / Edit / Bash + 工作空间约束（workspace.py）与 Bash 审批（permissions.py）
 - `memory/`：运行期数据（JSONL trace / transcript）+ 数据目录（paths.py）与保留清理（retention.py）

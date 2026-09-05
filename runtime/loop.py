@@ -16,6 +16,7 @@ from core.message import Message, system
 from memory.trace import TraceWriter, new_session_id
 from memory.transcript import TranscriptWriter
 from runtime.context.builder import ContextBuilder, load_system_prompt
+from runtime.output_guard import OutputGuard
 from runtime.state import AgentRunResult, StepRecord
 from tools.base import ToolResult
 from tools.registry import ToolRegistry
@@ -55,6 +56,8 @@ class AgentLoop:
         context_builder: ContextBuilder | None = None,
         streaming: bool = False,
         on_text_delta: Callable[[str], None] | None = None,
+        output_guard: OutputGuard | None = None,
+        data_dir: str | Path | None = None,
     ):
         self.llm = llm
         self.registry = registry
@@ -67,6 +70,10 @@ class AgentLoop:
         self.transcript_path = str(transcript_path) if transcript_path else None
         self.streaming = streaming
         self.on_text_delta = on_text_delta
+        # 输出治理：未注入时默认治理（data_dir 与 trace/transcript 同目录保持一致）
+        self.output_guard = output_guard or OutputGuard(
+            workspace_root=Path.cwd(), data_dir=data_dir
+        )
         # 打转检测：同一工具同参数连续失败的次数
         self._failure_counts: dict[str, int] = {}
 
@@ -127,6 +134,9 @@ class AgentLoop:
                     trace.append(record)
                     session.log_step(record)
             response = self._complete(messages, tools=self.registry.schemas())
+            # 用模型实测 token 校准水位：下一轮预测 = 本轮实测 + 新增估算
+            if self.context_builder is not None:
+                self.context_builder.note_usage(response.usage, messages)
 
             if not response.tool_calls:
                 # 模型直接给出最终回答，任务完成
@@ -157,6 +167,10 @@ class AgentLoop:
                 arguments = _parse_arguments(call.function.arguments)
                 self._emit("tool_start", call.function.name, arguments)
                 result = self.registry.call(call.function.name, arguments)
+                # 超长输出：全文落盘 artifact，模型只看到预览 + 精读提示
+                result = self.output_guard.guard(
+                    call.function.name, result, session_id=session.session_id
+                )
                 self._emit("tool_end", call.function.name, result)
                 record = StepRecord(
                     step=step,
@@ -168,9 +182,12 @@ class AgentLoop:
                 trace.append(record)
                 session.log_step(record)
                 # 工具结果以 role=tool 的消息回填，供模型下一轮观察
+                tool_text = result.text or ""
+                if not tool_text and result.error:
+                    tool_text = f"{result.error.code}: {result.error.message}"
                 tool_msg = Message(
                     role="tool",
-                    content=result.text,
+                    content=tool_text,
                     tool_call_id=call.id,
                     name=call.function.name,
                 )
@@ -254,6 +271,7 @@ class _SessionLogger:
         trace_path: str | None = None,
         transcript_path: str | None = None,
     ):
+        self.session_id = session_id
         self.trace_path = trace_path
         self.transcript_path = transcript_path
         self._trace = TraceWriter(trace_path, session_id=session_id) if trace_path else None

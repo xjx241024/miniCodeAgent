@@ -27,8 +27,9 @@ BASH_DISABLED_PATTERNS = [
     r"\brm\s+-rf\b", r"\bsudo\b", r"\bsu\b", r"\bmkfs\b", r"\bfdisk\b",
 ]
 
-# 输出长度上限，避免超大输出塞爆上下文
-OUTPUT_LIMIT = 4000
+# 工具层的"保护性"输出上限：超过说明输出异常巨大（防内存爆炸），
+# 正常超长输出不再头部截断，交由 runtime.output_guard 全文落盘 + 预览治理
+RAW_OUTPUT_LIMIT = 200_000
 
 
 class BashTool(BaseTool):
@@ -90,8 +91,8 @@ class BashTool(BaseTool):
             )
         except subprocess.TimeoutExpired:
             return ToolResult.failure(code="TIMEOUT", message=f"命令执行超过 {timeout} 秒")
-        stdout = _bounded((proc.stdout or "").strip())
-        stderr = _bounded((proc.stderr or "").strip())
+        stdout = _raw_bounded((proc.stdout or "").strip())
+        stderr = _raw_bounded((proc.stderr or "").strip())
         if proc.returncode != 0:
             message = (
                 f"退出码 {proc.returncode}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
@@ -110,8 +111,8 @@ class BashTool(BaseTool):
         return None
 
 
-def _bounded(text: str) -> str:
-    """截断超长输出，避免占满上下文。"""
-    if len(text) <= OUTPUT_LIMIT:
+def _raw_bounded(text: str) -> str:
+    """极端超大输出才截断（保护性上限），正常范围返回全文交给上层治理。"""
+    if len(text) <= RAW_OUTPUT_LIMIT:
         return text
-    return text[:OUTPUT_LIMIT] + f"…(共 {len(text)} 字符，已截断)"
+    return text[:RAW_OUTPUT_LIMIT] + f"…(共 {len(text)} 字符，超出保护上限)"

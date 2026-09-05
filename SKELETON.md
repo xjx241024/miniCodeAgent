@@ -1,6 +1,6 @@
 # JobAgent 项目骨架说明（最小闭环）
 
-> 状态：规划文档，代码已从 M1 搭建到 M8（会话连续与流式）。
+> 状态：规划文档，代码已从 M1 搭建到 M9（输出治理与预算）。
 > 参考：`../KamaClaude`（架构与学习地图）、`../MyCodeAgent`（工程纪律）、`../YYHDBL-HelloCodeAgentCli`（最小起点）、`../Extra09-Agent应用开发实践踩坑与经验分享.md`（设计原则来源）。
 
 ## 一、项目定位与目标
@@ -47,6 +47,8 @@
 8. 安全边界：所有路径必须落在工作空间内；Bash 中高危命令需用户审批（策略 ask/allow/deny）。
 9. 会话连续：同一会话复用单个 loop 并累积 history（跨轮次上下文）；trace/transcript 落到 ~/.jobagent，支持 /resume 恢复。
 10. 打转检测：同一工具同参数连续失败达到阈值时注入"换策略"提示，避免无效轮次。
+11. 输出治理：工具输出超阈值不再头部硬截断，全文写入 artifacts/，模型收到"预览 + 路径 + 精读提示"。
+12. 预算校准：上下文水位以模型实测 usage.prompt_tokens 为准（下一轮预测 = 上一轮实测 + 新增估算），而非纯启发式。
 
 ## 四、文件结构
 
@@ -63,8 +65,9 @@ JobAgent/
 │   ├── llm.py               # OpenAI-compatible 模型封装（流式 / 非流式 / 重试）
 │   └── message.py           # 消息结构：system / user / assistant / tool
 ├── runtime/                 # 运行时层
-│   ├── loop.py              # ReAct AgentLoop（max_steps、流式、打转检测、落盘）
+│   ├── loop.py              # ReAct AgentLoop（max_steps、流式、打转检测、输出治理、落盘）
 │   ├── session.py           # 单会话封装（跨轮次历史 + 自动持久化 + 恢复）
+│   ├── output_guard.py      # 超长工具输出治理（全文落盘 artifacts/ + 预览提示）
 │   ├── state.py             # 会话状态与步骤记录
 │   └── context/             # 上下文工程（L1/L2/L3 + 水位 compact）
 ├── tools/                   # 工具层
@@ -119,6 +122,7 @@ JobAgent/
 - runtime/session.py：持有单个 AgentLoop 与 history，每次 ask 把新增消息并入历史并写回 transcript，支持 resume 从既有 transcript 恢复。
 - memory/paths.py：把运行期数据统一放到 ~/.jobagent/<项目哈希>/，避免污染被操作的仓库；JOBAgent_DATA_DIR 可覆盖。
 - memory/retention.py：按会话数量与保存天数清理 trace / transcript / artifact，配合 CLI 启动 / /clean 自动执行。
+- runtime/output_guard.py：对超长工具输出做"截断 + 落盘"，返回"前 N 行预览 + artifact 路径 + 用 read/grep 精读"的提示，避免头部信息永久丢失。
 - app/one_shot.py：`-p "任务"` 单轮执行并退出，`--resume` 可继续会话。
 - demo/：比单元测试更完整的任务演示脚本，可跑通真实链路。
 
@@ -132,6 +136,7 @@ JobAgent/
 - M6 上下文工程（已完成）：runtime/context/ 实现 L1 系统规则 / L2 项目规则（AGENTS.md + 文件地图）/ L3 会话动态拼装；token 估算水位检测 + 截断式 compact；LLM 摘要式 compact 预留。
 - M7 安全边界（已完成）：tools/workspace.py 工作空间约束（越界/逃逸拒绝）；tools/permissions.py Bash 风险分级 + 审批网关（ask/allow/deny + 会话记忆）；文件工具接入 workspace；注册中心参数清洗；非交互默认 deny（fail-closed）。
 - M8 会话连续与流式（已完成）：runtime/session.py 单会话复用 + 历史累积；memory/paths.py 迁移 ~/.jobagent、memory/retention.py 保留清理；core/llm.py chat_stream_response 流式聚合（含工具调用分片）；loop 打转检测；CLI 增加 /new /resume /clean 与流式输出。
+- M9 输出治理与预算（已完成）：runtime/output_guard.py 超长输出全文落盘 artifacts/ + 预览提示（Bash 去掉头部硬截断）；ContextBuilder.note_usage 用实测 usage 校准水位；error 工具结果把错误码/原因回填给模型。
 
 ## 七、验收清单（M4 结束时）
 
