@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -54,6 +55,8 @@ class BashTool(BaseTool):
         # 默认工作空间为当前目录；permission 为 None 时只做黑名单拦截（测试/降级路径）
         self.workspace = workspace or Workspace(Path.cwd())
         self.permission = permission
+        # description 按平台动态生成：cmd 与 bash 语法差异大，必须提前告知模型
+        self.description = _build_description()
 
     def _run(self, arguments: dict) -> ToolResult:
         command = str(arguments.get("command", "")).strip()
@@ -109,6 +112,17 @@ class BashTool(BaseTool):
             if re.search(pattern, command):
                 return f"命令被禁止: {command}（命中模式 {pattern}），请使用专用工具或拆解任务"
         return None
+
+
+def _build_description() -> str:
+    """按平台生成 Bash 工具描述（动态而非写死，天然适配跨平台）。"""
+    base = "执行低频 shell 命令（禁止高频动作、交互、网络与危险命令；中高危需用户确认）"
+    if os.name == "nt":
+        return base + (
+            "。当前为 Windows cmd.exe：不支持 heredoc、; / & 连接、单引号与 $() 语法，"
+            "复杂逻辑请先写脚本文件再执行"
+        )
+    return base + "。当前为 POSIX shell（bash/sh）"
 
 
 def _raw_bounded(text: str) -> str:

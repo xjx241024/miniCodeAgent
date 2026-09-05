@@ -24,6 +24,7 @@ from tools.builtin.edit_tool import EditTool
 from tools.builtin.glob_tool import GlobTool
 from tools.builtin.grep_tool import GrepTool
 from tools.builtin.read_tool import ReadTool
+from tools.builtin.write_tool import WriteTool
 from tools.permissions import PermissionDecision, PermissionGateway
 from tools.registry import ToolRegistry
 from tools.workspace import Workspace
@@ -54,6 +55,7 @@ def build_registry(workspace=None, bash_permission=None) -> ToolRegistry:
     registry.register(GrepTool(workspace))
     registry.register(ReadTool(workspace))
     registry.register(EditTool(workspace))
+    registry.register(WriteTool(workspace))
     registry.register(BashTool(workspace, bash_permission))
     return registry
 

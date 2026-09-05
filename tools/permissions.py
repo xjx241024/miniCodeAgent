@@ -48,7 +48,9 @@ class RiskClassifier:
     _DENY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         (re.compile(r"(^|[;&|]\s*)rm\b"), "rm 会删除文件"),
         (re.compile(r"(^|[;&|]\s*)(?:sh|bash|zsh)\s+-c\b"), "嵌套 shell 会绕过命令分类"),
-        (re.compile(r"(^|[;&|]\s*)python(?:3)?\s+-c\b"), "内联 Python 会绕过命令分类"),
+        (re.compile(r"(^|[;&|]\s*)python(?:3)?\s+-c\b"),
+         "内联 Python（python -c）会绕过命令分类，已禁用；"
+         "如需执行 Python，请先用 write 工具或 echo 逐行写入 .py 脚本，再 python 执行该文件"),
         (re.compile(r"\|\s*(?:sh|bash|zsh)\b"), "管道进 shell 会执行未审代码"),
         (re.compile(r"`|\$\("), "命令替换会执行嵌套命令"),
         (re.compile(r"(^|[;&|]\s*)git\s+(?:checkout|reset|clean)\b"), "git 写操作会改动工作区"),

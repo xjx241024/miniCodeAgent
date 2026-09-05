@@ -78,7 +78,8 @@ JobAgent/
 │       ├── grep_tool.py     # 按内容搜索（带行号）
 │       ├── read_tool.py     # 读取文件（带行号、大小 / mtime）
 │       ├── edit_tool.py     # 读后写 + 乐观锁 + 原子替换
-│       └── bash_tool.py     # 低频兜底命令（黑白名单 + 超时）
+│       ├── write_tool.py    # 新建/整文件覆盖（读后写保护 + 内容上限 + 原子写）
+│       └── bash_tool.py     # 低频兜底命令（黑白名单 + 审批 + 平台动态描述）
 ├── app/
 │   ├── cli.py               # 交互式命令行入口
 │   └── one_shot.py          # 单轮任务入口（-p / --resume）
@@ -137,6 +138,7 @@ JobAgent/
 - M7 安全边界（已完成）：tools/workspace.py 工作空间约束（越界/逃逸拒绝）；tools/permissions.py Bash 风险分级 + 审批网关（ask/allow/deny + 会话记忆）；文件工具接入 workspace；注册中心参数清洗；非交互默认 deny（fail-closed）。
 - M8 会话连续与流式（已完成）：runtime/session.py 单会话复用 + 历史累积；memory/paths.py 迁移 ~/.jobagent、memory/retention.py 保留清理；core/llm.py chat_stream_response 流式聚合（含工具调用分片）；loop 打转检测；CLI 增加 /new /resume /clean 与流式输出。
 - M9 输出治理与预算（已完成）：runtime/output_guard.py 超长输出全文落盘 artifacts/ + 预览提示（Bash 去掉头部硬截断）；ContextBuilder.note_usage 用实测 usage 校准水位；error 工具结果把错误码/原因回填给模型。
+- M9 增强：tools/builtin/write_tool.py 新建/覆盖文件（读后写保护 + 原子写 + 内容上限）；L1 环境块按平台注入 shell 类型与限制；Bash 工具描述动态生成；python -c 拒绝消息附带替代路径。
 
 ## 七、验收清单（M4 结束时）
 

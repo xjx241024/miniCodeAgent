@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # 读后写保护依赖的固定工具名
 READ_TOOL = "read"
 EDIT_TOOL = "edit"
+WRITE_TOOL = "write"
 
 # 文件指纹：(mtime_ms, size_bytes, content_hash)
 FileFingerprint = tuple[int, int, str]
@@ -65,8 +66,12 @@ class ToolRegistry:
             return ToolResult.failure(code="UNKNOWN_TOOL", message=f"未注册的工具: {name}")
 
         arguments = self._clean_arguments(name, arguments)
-        if name == EDIT_TOOL:
-            blocked = self._check_edit_guard(arguments)
+        if name in (EDIT_TOOL, WRITE_TOOL):
+            blocked = (
+                self._check_edit_guard(arguments)
+                if name == EDIT_TOOL
+                else self._check_write_guard(arguments)
+            )
             if blocked is not None:
                 reason = blocked.error.code if blocked.error else ""
                 logger.info("工具调用被拒 name=%s reason=%s", name, reason)
@@ -78,6 +83,8 @@ class ToolRegistry:
 
         # 维护读后写保护状态
         if name == READ_TOOL and result.status == "success":
+            self._note_read(arguments, result.data)
+        if name == WRITE_TOOL and result.status == "success":
             self._note_read(arguments, result.data)
         if name == EDIT_TOOL and result.status == "success":
             self._invalidate_read(result.data.get("path"))
@@ -137,6 +144,30 @@ class ToolRegistry:
                 message=f"文件未读取: {arguments.get('path', '')}，请先 read 再 edit",
             )
         # 注入 read 时记录的指纹，模型无需自己传
+        arguments["mtime_ms"] = fingerprint[0]
+        arguments["size_bytes"] = fingerprint[1]
+        arguments["content_hash"] = fingerprint[2]
+        return None
+
+    def _check_write_guard(self, arguments: dict) -> ToolResult | None:
+        """write 前置校验：覆盖已存在文件必须先 read（防止盲写覆盖）。
+
+        新建文件无需 read；已存在文件会注入 read 时记录的指纹，
+        由 WriteTool 写入前做乐观锁冲突检测。
+        """
+        raw = str(arguments.get("path", ""))
+        try:
+            key = str(self.workspace.resolve(raw))
+        except WorkspaceError:
+            return None  # 越界路径交给工具层统一拒绝
+        if not Path(key).is_file():
+            return None  # 新建文件：无需 read
+        fingerprint = self._read_cache.get(key)
+        if fingerprint is None:
+            return ToolResult.failure(
+                code="FILE_NOT_READ",
+                message=f"文件已存在且未读取: {raw}，write 会覆盖整个文件，请先 read 再 write",
+            )
         arguments["mtime_ms"] = fingerprint[0]
         arguments["size_bytes"] = fingerprint[1]
         arguments["content_hash"] = fingerprint[2]

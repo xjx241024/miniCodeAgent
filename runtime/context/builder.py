@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 from datetime import datetime
@@ -24,6 +25,21 @@ _COMPACT_PLACEHOLDER = (
     "（为控制上下文长度，已折叠更早的对话记录；"
     "如需旧信息请重新用工具查询，不要假设被折叠的内容仍然成立。）"
 )
+
+
+def _shell_hint() -> str:
+    """按平台返回 shell 类型与关键语法限制，帮模型少走环境弯路。
+
+    Windows cmd 与 bash 语法差异巨大（heredoc、; / & 连接、单引号、$()），
+    不提前告知模型会浪费大量轮次在"考古环境"上（见 M8 实测失败案例）。
+    """
+    if os.name == "nt":
+        return (
+            "当前 shell 是 Windows cmd.exe，语法与 bash 不同："
+            "不支持 heredoc、; 与 & 连接、单引号与 $() 语法；"
+            "复杂逻辑请先写脚本文件再执行；python -c 内联代码被安全策略禁用"
+        )
+    return "当前 shell 是 POSIX（bash/sh），支持常规 bash 语法"
 
 
 class ContextBuilder:
@@ -48,7 +64,8 @@ class ContextBuilder:
             f"- 当前时间：{now:%Y-%m-%d %H:%M}（星期{_WEEKDAYS[now.weekday()]}）\n"
             f"- 工作目录：{self.cwd}\n"
             f"- 平台：{sys.platform}\n"
-            f"- Python 版本：{platform.python_version()}"
+            f"- Python 版本：{platform.python_version()}\n"
+            f"- {_shell_hint()}"
         )
 
     # ---- L2 项目规则（按仓库）----

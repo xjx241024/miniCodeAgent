@@ -43,6 +43,8 @@ def test_env_block_contains_cwd_and_platform(tmp_path):
     assert str(tmp_path) in block
     assert "Python 版本" in block
     assert "平台" in block
+    # shell 提示（M9 增强）：无论哪个平台都应有 shell 说明
+    assert "shell" in block
 
 
 def test_project_rules_discovers_agents_md(tmp_path):
